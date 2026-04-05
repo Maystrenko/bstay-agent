@@ -23,72 +23,70 @@ STAY22_AID = "bstay24"
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Список моделей для проверки (от самых стабильных к новым)
-MODELS_TO_TRY = [
-    "gemini-1.5-flash-002", 
-    "gemini-1.5-flash", 
-    "gemini-2.0-flash-lite", 
-    "gemini-2.0-flash", 
-    "gemini-flash-latest"
-]
+# Приоритет на модели с лимитом 1500 запросов
+MODELS_TO_TRY = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash-lite", "gemini-flash-latest"]
 
 class ChatPayload(BaseModel):
     user_id: str
     message: str
     chat_history: list
 
-def generate_with_fallback(prompt):
-    """Пытается вызвать ИИ, перебирая модели из списка при ошибках 404"""
-    last_error = ""
-    for model_name in MODELS_TO_TRY:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            return response.text, model_name
-        except Exception as e:
-            last_error = str(e)
-            if "404" in last_error:
-                continue # Пробуем следующую модель
-            else:
-                raise e # Если ошибка 429 или другая — выходим из цикла
-    raise Exception(f"Ни одна модель не ответила. Последняя ошибка: {last_error}")
-
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
     try:
         current_time = str(int(time.time()))
         
-        # 1. Извлечение города
-        extract_prompt = f"Extract city from: '{payload.message}'. Reply ONLY with 1 word in English. If none, say 'none'."
-        city_raw, used_model = generate_with_fallback(extract_prompt)
-        detected_city = city_raw.strip().split('\n')[0].replace(".", "").replace("'", "").strip()
+        # ЭКОНОМИЯ КВОТЫ: Просим всё за ОДИН запрос
+        prompt = f"""
+        Analyze this user message: "{payload.message}"
+        1. Extract the destination city in English.
+        2. Write a 2-sentence friendly greeting in Russian about this city.
+        Return ONLY a JSON object: {{"city": "CityName", "text": "Russian text"}}. 
+        If no city found, set city to "none".
+        """
         
-        if "none" in detected_city.lower() or len(detected_city) < 3:
-            return JSONResponse(content={"reply": "Привет! Напишите город, и я найду лучшие отели."})
+        # Перебор моделей для надежности
+        ai_response = ""
+        used_model = ""
+        for m_name in MODELS_TO_TRY:
+            try:
+                model = genai.GenerativeModel(m_name)
+                res = model.generate_content(prompt)
+                ai_response = res.text
+                used_model = m_name
+                break
+            except Exception as e:
+                if "404" in str(e): continue
+                else: raise e
 
-        # 2. Ссылка Stay22 с защитой от "Манчестера"
+        # Чистим JSON от мусора
+        clean_json = ai_response.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_json[clean_json.find('{'):clean_json.rfind('}')+1])
+        
+        detected_city = data.get("city", "none")
+        ai_text = data.get("text", "Привет! Назовите город?")
+
+        if detected_city.lower() == "none" or len(detected_city) < 3:
+            return JSONResponse(content={"reply": ai_text})
+
+        # Ссылка с защитой от Манчестера
         city_encoded = urllib.parse.quote(detected_city)
         booking_url = f"https://www.booking.com/searchresults.html?ss={city_encoded}&lang=ru"
         
-        # Мы добавляем address и campaign, чтобы перебить автоматику Stay22
         params = {
-            "campaign": "ai_search",
+            "campaign": "ai_bot",
             "link": booking_url,
-            "address": detected_city,
+            "address": detected_city, # ПРИНУДИТЕЛЬНО ПЕРЕБИВАЕМ МАНЧЕСТЕР
             "t": current_time
         }
         stay22_link = f"https://www.stay22.com/allez/{STAY22_AID}?{urllib.parse.urlencode(params)}"
         
-        # 3. Текст ответа
-        answer_prompt = f"Write 2 short sentences in Russian about visiting {detected_city}."
-        ai_text, _ = generate_with_fallback(answer_prompt)
-
         button_html = f"""
         <br><br>
-        <a href='{stay22_link}' target='_blank' style='display:inline-block; padding:14px 28px; background:#003580; color:white; text-decoration:none; border-radius:4px; font-weight:bold; font-family:Arial,sans-serif;'>
+        <a href='{stay22_link}' target='_blank' style='display:inline-block; padding:14px 28px; background:#003580; color:white; text-decoration:none; border-radius:4px; font-weight:bold;'>
            🏨 Отели в {detected_city}
         </a>
-        <br><small style='color:gray; font-size:9px;'>Город: {detected_city} | Модель: {used_model}</small>
+        <br><small style='color:gray; font-size:9px;'>ID: {current_time[-4:]} | Model: {used_model}</small>
         """
         
         return JSONResponse(
@@ -97,7 +95,6 @@ async def handle_chat(payload: ChatPayload):
         )
         
     except Exception as e:
-        error_str = str(e)
-        if "429" in error_str:
-            return JSONResponse(content={"reply": "Слишком много запросов! Подождите 30 секунд (лимит Google Free Tier)."})
-        return JSONResponse(content={"reply": f"Системная заминка: {error_str}"})
+        if "429" in str(e):
+            return JSONResponse(content={"reply": "Google Free Tier лимит. Подождите 30 сек."})
+        return JSONResponse(content={"reply": f"Ошибка: {str(e)}"})
