@@ -74,5 +74,5 @@ async def handle_chat(payload: ChatPayload):
         final_response = model.generate_content(answer_prompt)
         return {"reply": final_response.text}
         
-    except Exception as e:
-        return {"reply": "Извините, я сейчас обрабатываю слишком много запросов! Пожалуйста, уточните ваш запрос."}
+  except Exception as e:
+        return {"reply": f"Системная ошибка: {str(e)}"}
