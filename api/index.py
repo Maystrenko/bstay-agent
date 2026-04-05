@@ -27,7 +27,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 # Используем gemini-flash-latest (стабильные 1500 запросов в день)
-model = genai.GenerativeModel('gemini-flash-latest')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 class ChatPayload(BaseModel):
     user_id: str
