@@ -13,7 +13,7 @@ from pydantic import BaseModel
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# Ключи и настройки
+# Ключи
 gemini_keys = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
@@ -40,7 +40,7 @@ def get_hotels_safe(city_name, lang='ru'):
         if not loc_list: return None, "City not found"
         dest_id = loc_list[0].get('id')
 
-        # 2. Даты (30 дней вперед)
+        # 2. Даты
         in_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         out_date = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
 
@@ -52,7 +52,6 @@ def get_hotels_safe(city_name, lang='ru'):
         search_res = requests.get(f"https://{RAPID_HOST}/stays/search", headers=headers, params=search_params, timeout=12)
         search_json = search_res.json()
 
-        # Универсальный сбор списка отелей
         hotels = []
         if isinstance(search_json, list):
             hotels = search_json
@@ -60,7 +59,6 @@ def get_hotels_safe(city_name, lang='ru'):
             d_block = search_json.get('data', {})
             hotels = d_block if isinstance(d_block, list) else (d_block.get('hotels', []) or d_block.get('results', []))
 
-        if not hotels: return None, "No hotels available"
         return hotels[:3], None
     except Exception as e:
         return None, f"Err: {str(e)[:15]}"
@@ -84,57 +82,62 @@ async def handle_chat(payload: ChatPayload):
                 engine = "Groq"
             except: pass
 
-        if not ai_res: return JSONResponse(content={"reply": "AI is busy. Try in 5s."})
+        if not ai_res: return JSONResponse(content={"reply": "AI error."})
         data = json.loads(ai_res[ai_res.find('{'):ai_res.rfind('}')+1])
         city = data.get("city", "none")
         greeting = data.get("text", "Searching...")
 
         hotels_html = ""
         api_info = "Live"
-        debug_keys = ""
         
         if city.lower() != "none" and len(city) > 2:
             hotels, err = get_hotels_safe(city, payload.lang)
             if hotels:
-                debug_keys = f"Keys: {list(hotels[0].keys())[:10]}" # Показываем ключи для отладки
                 hotels_html = "<div style='margin-top:15px; display:flex; flex-direction:column; gap:12px;'>"
                 for h in hotels:
                     # 1. ИМЯ
-                    name = h.get('name') or h.get('hotel_name') or h.get('property_name') or "Great Hotel"
+                    name = h.get('name') or h.get('hotel_name') or "Hotel"
                     
-                    # 2. ЦЕНА (Пробуем ВСЕ варианты)
+                    # 2. ЦЕНА (Улучшенный поиск)
                     price_val = "0"
                     p_obj = h.get('price', {})
                     if isinstance(p_obj, dict):
-                        # Вариант 1: Nested grossAmount
-                        gross = p_obj.get('amountPerStay', {}).get('grossAmount', {})
-                        if isinstance(gross, dict):
-                            price_val = gross.get('amount') or gross.get('value')
-                        else:
+                        # Проверяем вложенные поля grossAmount
+                        amount_stay = p_obj.get('amountPerStay', {})
+                        if isinstance(amount_stay, dict):
+                            gross = amount_stay.get('grossAmount', {})
+                            price_val = gross.get('amount') or gross.get('value') if isinstance(gross, dict) else gross
+                        
+                        if not price_val or price_val == "0":
                             price_val = p_obj.get('displayPrice') or p_obj.get('grossAmount')
-                    
+
+                    # Если всё еще 0, ищем в корне
                     if not price_val or str(price_val) == "0":
-                        # Вариант 2: Прямые ключи
-                        price_val = h.get('minPrice') or h.get('min_total_price') or h.get('amount')
+                        price_val = h.get('minPrice') or h.get('min_total_price')
+
+                    price_final = "".join(filter(str.isdigit, str(price_val)))
+                    price_display = f"от {price_final} USD за 3 ночи" if price_final and price_final != "0" else "Цена по запросу"
                     
-                    price_final = "".join(filter(str.isdigit, str(price_val))) or "По запросу"
-                    
-                    # 3. ФОТО (Пробуем ВСЕ варианты)
-                    img = h.get('mainPhotoUrl') or h.get('photoUrl') or h.get('main_photo_url') or h.get('max_photo_url')
+                    # 3. ФОТО (Исправляем протокол //)
+                    img = h.get('mainPhotoUrl') or h.get('photoUrl') or h.get('main_photo_url')
                     if not img and h.get('wishlist_data'):
                         img = h['wishlist_data'].get('main_photo_url')
                     
-                    if img and 'square60' in img:
-                        img = img.replace('square60', 'square300')
+                    if img:
+                        if img.startswith('//'): img = 'https:' + img
+                        if 'square60' in img: img = img.replace('square60', 'square300')
                     
-                    link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name)}&campaign=ai_card"
+                    # 4. ССЫЛКА (Добавляем город для точности Stay22)
+                    # Stay22 лучше находит отель, если передать "Название, Город"
+                    full_address = f"{name}, {city}"
+                    link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(full_address)}&campaign=ai_card"
                     
                     hotels_html += f"""
-                    <div style='background:#fff; border:1px solid #eee; border-radius:12px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.1);'>
-                        {f"<img src='{img}' style='width:100%; height:160px; object-fit:cover; display:block;'>" if img else "<div style='height:120px; background:#f5f5f5;'></div>"}
+                    <div style='background:#fff; border:1px solid #eee; border-radius:12px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.1); margin-bottom:10px;'>
+                        {f"<img src='{img}' style='width:100%; height:160px; object-fit:cover; display:block;'>" if img else "<div style='height:140px; background:#f0f0f0; display:flex; align-items:center; justify-content:center; color:#ccc;'>Нет фото</div>"}
                         <div style='padding:12px;'>
-                            <div style='font-weight:bold; font-size:15px; color:#333;'>{name}</div>
-                            <div style='font-size:13px; color:#28a745; margin:8px 0; font-weight:bold;'>от {price_final} USD за 3 ночи</div>
+                            <div style='font-weight:bold; font-size:15px; color:#333; line-height:1.2;'>{name}</div>
+                            <div style='font-size:13px; color:#28a745; margin:8px 0; font-weight:bold;'>{price_display}</div>
                             <a href='{link}' target='_blank' style='display:block; text-align:center; padding:12px; background:#007BFF; color:white; text-decoration:none; border-radius:8px; font-weight:bold; font-size:13px;'>Выбрать номер</a>
                         </div>
                     </div>"""
@@ -147,7 +150,7 @@ async def handle_chat(payload: ChatPayload):
         
         footer = f"""
         <br><a href='{main_url}' target='_blank' style='display:inline-block; padding:16px; background:#003580; color:white; text-decoration:none; border-radius:10px; font-weight:bold; width:100%; text-align:center; box-sizing:border-box;'>{btn_text}</a>
-        <br><small style='color:gray; font-size:9px;'>Engine: {engine} | {api_info} | {debug_keys}</small>
+        <br><small style='color:gray; font-size:9px;'>Engine: {engine} | {api_info}</small>
         """
         return JSONResponse(content={"reply": greeting + hotels_html + footer})
     except Exception as e:
