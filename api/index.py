@@ -69,4 +69,4 @@ async def handle_chat(payload: ChatPayload):
         return {"reply": final_response.text}
         
     except Exception as e:
-        return {"reply": "Извините, сейчас слишком много людей ищут отели! Пожалуйста, попробуйте спросить еще раз через пару минут."}
+        return {"reply": f"Системная ошибка: {str(e)}"}
