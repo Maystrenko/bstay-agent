@@ -1,6 +1,7 @@
 import os
 import json
 import urllib.parse
+import time  # Добавили для уникальности запросов
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -16,16 +17,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1. Настройка ключа и модели
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
 STAY22_AID = "bstay24"
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-else:
-    print("ВНИМАНИЕ: Ключ GEMINI_API_KEY не найден в Vercel!")
-
-# Модель 1.5-flash — самая стабильная для бесплатных аккаунтов (1500/день)
+# Используем самую стабильную модель
 model = genai.GenerativeModel('gemini-flash-latest')
 
 class ChatPayload(BaseModel):
@@ -36,37 +33,52 @@ class ChatPayload(BaseModel):
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
     try:
-        # ШАГ 1: Извлекаем город (игнорируем всю историю для чистоты поиска)
-        extract_prompt = f"Identify the city in this text: '{payload.message}'. Return ONLY the city name in English. No other words. If no city, say 'none'."
+        # --- СУПЕР-ЖЕСТКАЯ ИНСТРУКЦИЯ ---
+        # Мы добавляем текущее время (timestamp) в промпт, чтобы ИИ всегда видел новый текст
+        current_time = str(time.time())
+        extract_prompt = f"""
+        Timestamp: {current_time}
+        Task: Extract ONLY the city name in English from the user message. 
+        Message: "{payload.message}"
+        IMPORTANT: Ignore all previous cities or contexts. Focus ONLY on the message above.
+        If no city found, reply 'none'.
+        Reply with ONE WORD ONLY.
+        """
+        
         response = model.generate_content(extract_prompt)
-        detected_city = response.text.strip().replace(".", "").split('\n')[0].strip()
+        # Очистка: берем только первое слово, убираем знаки препинания
+        detected_city = response.text.strip().split()[0].replace(".", "").replace(",", "").replace("'", "")
         
         if "none" in detected_city.lower() or len(detected_city) < 3:
-            return JSONResponse(content={"reply": "Привет! Назовите город, и я найду лучшие отели."})
+            return JSONResponse(content={"reply": "Привет! Напишите название города, чтобы я нашел отели."})
 
-        # ШАГ 2: Собираем прямую ссылку
+        # Формируем ссылку
         city_encoded = urllib.parse.quote(detected_city)
-        booking_url = f"https://www.booking.com/searchresults.html?ss={city_encoded}&lang=ru"
+        # Добавляем в ссылку случайный параметр &t=..., чтобы Букинг и Vercel не кешировали её
+        booking_url = f"https://www.booking.com/searchresults.html?ss={city_encoded}&lang=ru&t={current_time}"
         final_link = f"https://www.stay22.com/allez/{STAY22_AID}?campaign=ai-bot&link={urllib.parse.quote(booking_url)}"
         
-        # ШАГ 3: Пишем текст
-        answer_prompt = f"Write 2 short sentences in Russian about traveling to {detected_city}. Be inviting."
+        # Генерация текста ответа
+        answer_prompt = f"Write 2 short friendly sentences in Russian about {detected_city}. No markdown."
         final_res = model.generate_content(answer_prompt)
         ai_text = final_res.text.replace("```html", "").replace("```", "").strip()
 
         button_html = f"""
         <br><br>
-        <a href='{final_link}' target='_blank' style='display:inline-block; padding:12px 24px; background:#003580; color:white; text-decoration:none; border-radius:4px; font-weight:bold;'>
-           🏨 Посмотреть варианты в {detected_city}
+        <a href='{final_link}' target='_blank' style='display:inline-block; padding:14px 28px; background:#003580; color:white; text-decoration:none; border-radius:4px; font-weight:bold;'>
+           🏨 Посмотреть отели в {detected_city}
         </a>
-        <br><small style='color:gray; font-size:10px;'>Город: {detected_city}</small>
+        <br><small style='color:gray; font-size:9px;'>ID поиска: {current_time[-5:]} | Город: {detected_city}</small>
         """
         
+        # Возвращаем ответ с ЖЕСТКИМ запретом на кеширование
         return JSONResponse(
             content={"reply": ai_text + button_html},
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache"
+            }
         )
         
     except Exception as e:
-        # Если будет ошибка 429 или любая другая - мы увидим её текст в чате
         return JSONResponse(content={"reply": f"Ошибка: {str(e)}"})
