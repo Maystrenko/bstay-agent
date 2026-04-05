@@ -3,3 +3,4 @@ uvicorn
 google-genai
 requests
 pydantic
+upstash-redis
