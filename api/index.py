@@ -13,15 +13,14 @@ import redis as py_redis
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- ПОДКЛЮЧЕНИЕ К REDIS CLOUD (redis.io) ---
+# --- ПОДКЛЮЧЕНИЕ К REDIS CLOUD ---
 redis_db = None
 try:
     url = os.environ.get("REDIS_URL")
     if url:
         redis_db = py_redis.from_url(url, decode_responses=True, socket_timeout=5)
-        print("✅ Redis Cloud: Connected!")
 except Exception as e:
-    print(f"❌ Redis Error: {e}")
+    print(f"Redis Error: {e}")
 
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
@@ -30,21 +29,14 @@ STAY22_AID = "bstay24"
 class ChatPayload(BaseModel):
     message: str
 
-def get_hotels(city_en, intent):
-    """Поиск строго по английскому названию города"""
+def get_new_hotels(city_en, intent, existing_ids):
+    """Ищем 3 отеля, которых НЕТ в нашем списке"""
     try:
         headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": "booking-com18.p.rapidapi.com"}
-        
-        # 1. Поиск ID города (именно на английском он работает на 100% точно)
         l_res = requests.get("https://booking-com18.p.rapidapi.com/stays/auto-complete", 
                              headers=headers, params={"query": city_en}, timeout=10)
-        locs = l_res.json().get('data', [])
-        if not locs: return None
+        dest_id = l_res.json()['data'][0]['id']
         
-        # Берем первый ID из списка
-        dest_id = locs[0]['id']
-        
-        # 2. Поиск отелей
         params = {
             "locationId": dest_id, 
             "checkinDate": (datetime.now()+timedelta(days=30)).strftime('%Y-%m-%d'),
@@ -57,9 +49,14 @@ def get_hotels(city_en, intent):
         data = h_res.json().get('data', [])
         if not isinstance(data, list): data = h_res.json().get('data', {}).get('hotels', [])
         
-        return [{"id": str(x.get('hotel_id') or x.get('id')), "name": x.get('name') or x.get('hotel_name')} for x in data if x.get('id') or x.get('hotel_id')][:5]
-    except:
-        return None
+        new_found = []
+        for x in data:
+            h_id = str(x.get('hotel_id') or x.get('id'))
+            if h_id not in existing_ids:
+                new_found.append({"id": h_id, "name": x.get('name') or x.get('hotel_name')})
+            if len(new_found) >= 3: break
+        return new_found
+    except: return []
 
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
@@ -68,60 +65,76 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     try:
-        # --- ШАГ 1: ПЕРЕВОД И ОЧИСТКА ГОРОДА (Фикс Болгарии) ---
-        p_extract = f"Extract the city name in English from: '{msg}'. Respond ONLY with the city name. Example: 'London'."
+        # 1. Определяем город через ИИ (для точности)
+        p_city = f"Extract city name in English from: '{msg}'. Respond ONLY with city name."
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
-            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_extract}]}, timeout=7)
+            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
+        city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
         
-        city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "").replace("'", "")
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
+        db_key = f"store:v4:{city_en.lower()}:{intent}"
 
-        if len(city_en) < 2:
-            return JSONResponse(content={"reply": "Пожалуйста, укажите город."})
-
-        # --- ШАГ 2: ПРОВЕРКА REDIS ---
-        db_key = f"h:{city_en.lower()}:{intent}:ru"
+        # 2. Достаем всё, что уже накопили в Redis
+        full_list = []
+        existing_ids = []
         if redis_db:
-            try:
-                cached = redis_db.get(db_key)
-                if cached: return JSONResponse(content={"reply": cached})
-            except: pass
+            raw = redis_db.get(db_key)
+            if raw:
+                full_list = json.loads(raw)
+                existing_ids = [item['id'] for item in full_list]
 
-        # --- ШАГ 3: ПОИСК ---
-        hotels = get_hotels(city_en, intent)
-        if not hotels:
-            return JSONResponse(content={"reply": f"Отели в {city_en} не найдены."})
+        # 3. Добавляем 3 новых отеля сегодня
+        new_items = get_new_hotels(city_en, intent, existing_ids)
+        if new_items:
+            g_prompt = f"Напиши на русском описание для 3 отелей в {city_en}: {json.dumps(new_items)}. JSON ONLY: {{'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'почему он', 'd': 'описание 15 слов'}} ]}}"
+            g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
+                json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
+            new_data = json.loads(g_res.json()['choices'][0]['message']['content'])
+            
+            # Вставляем новые в начало списка
+            for h in new_data['cats']:
+                full_list.insert(0, h)
+            
+            # Сохраняем обновленный (выросший) список
+            if redis_db:
+                redis_db.set(db_key, json.dumps(full_list))
 
-        # --- ШАГ 4: ГЕНЕРАЦИЯ ОТВЕТА ---
-        g_prompt = f"Напиши на русском краткий гид по 3 отелям в {city_en}. Данные: {json.dumps(hotels)}. Ответ ТОЛЬКО в формате JSON: {{\"i\": \"текст\", \"cats\": [ {{\"n\": \"категория\", \"h\": {{\"id\": \"id\", \"n\": \"имя\", \"d\": \"описание\"}} }} ]}}"
-        g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
-            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
+        if not full_list:
+            return JSONResponse(content={"reply": "Отели не найдены."})
+
+        # 4. ЛОГИКА ВЫДАЧИ: Показываем только ТОП-10
+        display_limit = 10
+        to_show = full_list[:display_limit]
+        hidden_count = len(full_list) - display_limit
+
+        # 5. Сборка HTML
+        html = f"<div style='font-family:sans-serif; color:#333;'><p>📍 <b>{city_en.capitalize()}</b>: показываем {len(to_show)} из {len(full_list)} отелей.</p>"
         
-        res_data = json.loads(g_res.json()['choices'][0]['message']['content'])
-        
-        # Сборка HTML (Karla font для стиля)
-        html = f"<div style='font-family:sans-serif;'><p>{res_data.get('i', '')}</p>"
-        for cat in res_data['cats']:
-            h = cat['h']
+        for h in to_show:
             link = f"https://www.stay22.com/allez/booking/{h['id']}?aid={STAY22_AID}"
             html += f"""
-            <div style='margin-top:15px; padding:15px; background:#fff; border-radius:10px; border:1px solid #eee; box-shadow:0 2px 5px rgba(0,0,0,0.05);'>
-                <div style='display:flex; justify-content:space-between; align-items:center;'>
-                    <b style='font-size:14px;'>{h['n']}</b>
-                    <a href='{link}' target='_blank' style='background:#007BFF; color:#fff; text-decoration:none; padding:6px 12px; border-radius:6px; font-size:12px; font-weight:bold;'>Забронировать</a>
+            <div style='margin-bottom:12px; padding:15px; background:#fff; border-radius:12px; border:1px solid #eef2f7; box-shadow:0 2px 4px rgba(0,0,0,0.02);'>
+                <div style='display:flex; justify-content:space-between; align-items:flex-start;'>
+                    <div style='max-width:70%;'>
+                        <span style='font-size:10px; color:#007BFF; font-weight:bold;'>{h.get('cat', 'Выбор дня')}</span>
+                        <div style='font-size:14px; font-weight:bold; color:#1a1a1a;'>{h['n']}</div>
+                    </div>
+                    <a href='{link}' target='_blank' style='background:#007BFF; color:#fff; text-decoration:none; padding:8px 14px; border-radius:8px; font-size:12px; font-weight:bold;'>Выбрать</a>
                 </div>
                 <p style='font-size:12px; color:#666; margin:8px 0 0;'>{h['d']}</p>
             </div>"""
         
+        # Кнопка "Показать еще", если в базе больше 10
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
-        html += f"<br><a href='{all_link}' target='_blank' style='display:block; text-align:center; padding:12px; background:#003580; color:#fff; text-decoration:none; border-radius:8px; font-weight:bold;'>Все отели →</a></div>"
+        if hidden_count > 0:
+            html += f"""
+            <a href='{all_link}' target='_blank' style='display:block; text-align:center; padding:12px; background:#f0f7ff; color:#007BFF; text-decoration:none; border-radius:10px; font-weight:bold; font-size:13px; border:1px dashed #007BFF; margin-top:10px;'>
+                Показать еще {hidden_count} отелей в {city_en.capitalize()} →
+            </a>"""
+        else:
+            html += f"<br><a href='{all_link}' target='_blank' style='display:block; text-align:center; padding:12px; background:#003580; color:#fff; text-decoration:none; border-radius:10px; font-weight:bold;'>Смотреть все на карте →</a>"
 
-        # --- ШАГ 5: СОХРАНЕНИЕ ---
-        if redis_db:
-            try:
-                redis_db.set(db_key, html, ex=86400) # Кэш на 24 часа
-            except: pass
-
+        html += "</div>"
         return JSONResponse(content={"reply": html})
-    except Exception as e:
+    except:
         return JSONResponse(content={"reply": "Ошибка. Попробуйте еще раз."})
