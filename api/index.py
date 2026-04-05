@@ -44,7 +44,7 @@ class ChatPayload(BaseModel):
     lang: str = "en"
 
 def get_hotels_safe(city_name, lang='ru'):
-    """Поиск отелей через актуальные эндпоинты booking-com18"""
+    """Поиск отелей через stays/auto-complete и stays/search"""
     if not RAPID_API_KEY: 
         return None, "No API Key"
         
@@ -54,26 +54,28 @@ def get_hotels_safe(city_name, lang='ru'):
     }
     
     try:
-        # 1. Поиск ID города через stays/auto-complete (как на твоём скрине)
+        # 1. Поиск ID локации (stays/auto-complete)
         loc_url = f"https://{RAPID_HOST}/stays/auto-complete"
         loc_res = requests.get(loc_url, headers=headers, params={"query": city_name}, timeout=5)
         
         if loc_res.status_code != 200:
             return None, f"Loc Error {loc_res.status_code}"
             
-        # В этой версии данные обычно в ключе ['data']
-        loc_data = loc_res.json().get('data', [])
+        loc_json = loc_res.json()
+        loc_data = loc_json.get('data', [])
         if not loc_data:
             return None, "City not found"
         
-        # Берем ID из первого результата
-        dest_id = loc_data[0].get('id') 
+        # Берем ID из первого результата. В этой API это обычно поле 'id'
+        dest_id = loc_data[0].get('id')
+        if not dest_id:
+            return None, "No ID in data"
 
         # 2. Даты (на 30 дней вперед)
         checkin = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         checkout = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
 
-        # 3. Поиск отелей через stays/search (как на твоём скрине)
+        # 3. Поиск отелей (stays/search)
         search_url = f"https://{RAPID_HOST}/stays/search"
         params = {
             "id": dest_id,
@@ -91,9 +93,11 @@ def get_hotels_safe(city_name, lang='ru'):
         if search_res.status_code != 200:
             return None, f"Search Error {search_res.status_code}"
 
-        # Парсим список отелей (обычно в data -> hotels)
-        data = search_res.json().get('data', {})
-        hotels = data.get('hotels', []) or data.get('result', [])
+        search_json = search_res.json()
+        # В booking-com18 отели лежат в data -> results или data -> hotels
+        data_block = search_json.get('data', {})
+        hotels = data_block.get('hotels', []) or data_block.get('results', [])
+        
         return hotels[:3], None
         
     except Exception as e:
@@ -103,12 +107,19 @@ def get_hotels_safe(city_name, lang='ru'):
 async def handle_chat(payload: ChatPayload):
     try:
         target_lang = LANG_MAP.get(payload.lang, "Russian")
-        prompt = f"Extract city (English) and write 2-sentence cool greeting in {target_lang}. User: {payload.message}. Return JSON: {{\"city\": \"City\", \"text\": \"Greeting\"}}"
+        # Улучшаем промпт, чтобы ИИ был более дружелюбным
+        prompt = f"""
+        You are a travel expert for bstay24.com.
+        User message: "{payload.message}"
+        1. Extract the city in English.
+        2. Write a 2-sentence inspiring greeting in {target_lang} about this city.
+        Return ONLY JSON: {{"city": "CityName", "text": "Greeting text"}}
+        """
         
         ai_response = None
         engine = "None"
 
-        # 1. Пробуем Groq (самый стабильный)
+        # Пробуем Groq (самый стабильный по твоим скринам)
         if groq_keys:
             try:
                 g_key = random.choice(groq_keys)
@@ -123,30 +134,38 @@ async def handle_chat(payload: ChatPayload):
                 engine = "Groq"
             except: pass
 
-        if not ai_response: return JSONResponse(content={"reply": "ИИ занят, попробуй еще раз."})
+        if not ai_response: 
+            return JSONResponse(content={"reply": "ИИ временно недоступен. Попробуйте еще раз через минуту."})
 
-        data = json.loads(ai_response[ai_response.find('{'):ai_response.rfind('}')+1])
-        city = data.get("city", "none")
-        greeting = data.get("text", "Город найден!")
+        # Парсинг ответа ИИ
+        try:
+            data = json.loads(ai_response[ai_response.find('{'):ai_response.rfind('}')+1])
+            city = data.get("city", "none")
+            greeting = data.get("text", "Нашел отличные варианты!")
+        except:
+            return JSONResponse(content={"reply": "Ошибка обработки города. Попробуйте написать название города еще раз."})
 
         # Поиск отелей
         hotels_html = ""
-        api_status = "Live"
+        api_info = "Live"
         
         if city.lower() != "none":
             hotels, err = get_hotels_safe(city, payload.lang)
             if hotels:
                 hotels_html = "<div style='margin-top:15px; display:flex; flex-direction:column; gap:12px;'>"
                 for h in hotels:
-                    # Поля в booking-com18
+                    # Поля в booking-com18 могут называться по-разному
                     name = h.get('name') or h.get('hotel_name', 'Hotel')
-                    price_info = h.get('price', {}).get('displayPrice', '0')
-                    # Убираем лишние значки из цены если есть
-                    price = "".join(filter(str.isdigit, str(price_info))) or "0"
+                    
+                    # Цена часто в объекте price -> displayPrice
+                    price_data = h.get('price', {})
+                    price_val = price_data.get('displayPrice') or h.get('min_total_price', '0')
+                    # Очищаем цену от валюты для отображения
+                    price = "".join(filter(str.isdigit, str(price_val))) or "0"
                     
                     img = h.get('mainPhotoUrl') or h.get('main_photo_url', '')
                     
-                    h_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name)}"
+                    link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name)}&campaign=ai_card"
                     
                     hotels_html += f"""
                     <div style='background:#fff; border:1px solid #eee; border-radius:12px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.1);'>
@@ -154,22 +173,23 @@ async def handle_chat(payload: ChatPayload):
                         <div style='padding:12px;'>
                             <div style='font-weight:bold; font-size:15px; color:#333;'>{name}</div>
                             <div style='font-size:13px; color:#28a745; margin:6px 0; font-weight:bold;'>от {price} USD за 3 ночи</div>
-                            <a href='{h_link}' target='_blank' style='display:block; text-align:center; padding:10px; background:#007BFF; color:white; text-decoration:none; border-radius:8px; font-weight:bold; font-size:13px;'>Выбрать номер</a>
+                            <a href='{link}' target='_blank' style='display:block; text-align:center; padding:10px; background:#007BFF; color:white; text-decoration:none; border-radius:8px; font-weight:bold; font-size:13px;'>Выбрать номер</a>
                         </div>
                     </div>"""
                 hotels_html += "</div>"
-            if err: api_status = err
+            if err: api_info = err
 
+        # Финальные кнопки
         city_enc = urllib.parse.quote(city)
         main_url = f"https://www.stay22.com/allez/{STAY22_AID}?address={city_enc}&link=https://www.booking.com/searchresults.html?ss={city_enc}%26lang={payload.lang}"
-        btn_text = f"🏨 Все отели в {city}" if payload.lang == 'ru' else f"🏨 All hotels in {city}"
+        btn_text = f"🏨 Все отели в {city}" if payload.lang == 'ru' else f"🏨 View hotels in {city}"
         
         footer = f"""
         <br><a href='{main_url}' target='_blank' style='display:inline-block; padding:15px; background:#003580; color:white; text-decoration:none; border-radius:8px; font-weight:bold; width:100%; text-align:center; box-sizing:border-box;'>{btn_text}</a>
-        <br><small style='color:gray; font-size:9px;'>Engine: {engine} | API: {api_status}</small>
+        <br><small style='color:gray; font-size:9px;'>Engine: {engine} | API: {api_info}</small>
         """
 
         return JSONResponse(content={"reply": greeting + hotels_html + footer})
 
     except Exception as e:
-        return JSONResponse(content={"reply": f"Ошибка сервера: {str(e)}"})
+        return JSONResponse(content={"reply": f"Ошибка системы: {str(e)}"})
