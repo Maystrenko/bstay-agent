@@ -30,7 +30,6 @@ class ChatPayload(BaseModel):
     message: str
 
 def get_new_hotels(city_en, intent, existing_ids):
-    """Ищем 3 отеля, которых НЕТ в нашем списке"""
     try:
         headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": "booking-com18.p.rapidapi.com"}
         l_res = requests.get("https://booking-com18.p.rapidapi.com/stays/auto-complete", 
@@ -65,74 +64,95 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     try:
-        # 1. Определяем город через ИИ (для точности)
         p_city = f"Extract city name in English from: '{msg}'. Respond ONLY with city name."
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
-        db_key = f"store:v4:{city_en.lower()}:{intent}"
+        db_key = f"v5:store:{city_en.lower()}:{intent}"
 
-        # 2. Достаем всё, что уже накопили в Redis
         full_list = []
-        existing_ids = []
         if redis_db:
             raw = redis_db.get(db_key)
-            if raw:
-                full_list = json.loads(raw)
-                existing_ids = [item['id'] for item in full_list]
+            full_list = json.loads(raw) if raw else []
 
-        # 3. Добавляем 3 новых отеля сегодня
+        existing_ids = [item['id'] for item in full_list]
         new_items = get_new_hotels(city_en, intent, existing_ids)
+
         if new_items:
-            g_prompt = f"Напиши на русском описание для 3 отелей в {city_en}: {json.dumps(new_items)}. JSON ONLY: {{'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'почему он', 'd': 'описание 15 слов'}} ]}}"
+            g_prompt = f"""
+            Напиши на русском гид по этим 3 отелям в {city_en}: {json.dumps(new_items)}. 
+            Также дай один короткий полезный совет путешественнику.
+            JSON ONLY: {{
+              "adv": "совет по городу",
+              "cats": [ {{"id": "id", "n": "название", "cat": "почему он", "d": "описание 15 слов"}} ]
+            }}"""
             g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                 json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
             new_data = json.loads(g_res.json()['choices'][0]['message']['content'])
             
-            # Вставляем новые в начало списка
+            # Сохраняем совет только от последней выдачи
+            last_advice = new_data.get('adv', '')
             for h in new_data['cats']:
+                h['advice'] = last_advice # Привязываем совет к метаданным
                 full_list.insert(0, h)
             
-            # Сохраняем обновленный (выросший) список
-            if redis_db:
-                redis_db.set(db_key, json.dumps(full_list))
+            if redis_db: redis_db.set(db_key, json.dumps(full_list))
 
         if not full_list:
             return JSONResponse(content={"reply": "Отели не найдены."})
 
-        # 4. ЛОГИКА ВЫДАЧИ: Показываем только ТОП-10
-        display_limit = 10
-        to_show = full_list[:display_limit]
-        hidden_count = len(full_list) - display_limit
+        # Логика 10 отелей
+        to_show = full_list[:10]
+        hidden = len(full_list) - 10
+        current_advice = to_show[0].get('advice', '')
 
-        # 5. Сборка HTML
-        html = f"<div style='font-family:sans-serif; color:#333;'><p>📍 <b>{city_en.capitalize()}</b>: показываем {len(to_show)} из {len(full_list)} отелей.</p>"
+        # Сборка HTML
+        html = f"""
+        <div style="font-family: 'Segoe UI', Roboto, sans-serif; max-width: 450px; margin: 0 auto; color: #2d3436;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 15px;">
+                <span style="font-size: 20px;">📍</span>
+                <b style="font-size: 18px; color: #1e272e;">{city_en.capitalize()}</b>
+                <span style="background: #f1f2f6; padding: 2px 8px; border-radius: 10px; font-size: 12px; color: #747d8c;">{len(full_list)} вариантов</span>
+            </div>
+        """
         
         for h in to_show:
             link = f"https://www.stay22.com/allez/booking/{h['id']}?aid={STAY22_AID}"
             html += f"""
-            <div style='margin-bottom:12px; padding:15px; background:#fff; border-radius:12px; border:1px solid #eef2f7; box-shadow:0 2px 4px rgba(0,0,0,0.02);'>
-                <div style='display:flex; justify-content:space-between; align-items:flex-start;'>
-                    <div style='max-width:70%;'>
-                        <span style='font-size:10px; color:#007BFF; font-weight:bold;'>{h.get('cat', 'Выбор дня')}</span>
-                        <div style='font-size:14px; font-weight:bold; color:#1a1a1a;'>{h['n']}</div>
+            <div style="background: #ffffff; border: 1px solid #f1f2f6; border-radius: 16px; padding: 16px; margin-bottom: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.03);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
+                    <div>
+                        <div style="color: #0984e3; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px;">{h.get('cat', 'Рекомендуем')}</div>
+                        <div style="font-size: 15px; font-weight: 700; color: #2d3436; line-height: 1.3;">{h['n']}</div>
                     </div>
-                    <a href='{link}' target='_blank' style='background:#007BFF; color:#fff; text-decoration:none; padding:8px 14px; border-radius:8px; font-size:12px; font-weight:bold;'>Выбрать</a>
+                    <a href="{link}" target="_blank" style="background: linear-gradient(135deg, #0984e3, #00cec9); color: #fff; text-decoration: none; padding: 8px 16px; border-radius: 10px; font-size: 12px; font-weight: 700; box-shadow: 0 4px 10px rgba(9, 132, 227, 0.2);">Выбрать</a>
                 </div>
-                <p style='font-size:12px; color:#666; margin:8px 0 0;'>{h['d']}</p>
-            </div>"""
+                <div style="font-size: 13px; color: #636e72; margin-top: 10px; line-height: 1.5;">{h['d']}</div>
+            </div>
+            """
         
-        # Кнопка "Показать еще", если в базе больше 10
-        all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
-        if hidden_count > 0:
+        # Блок СОВЕТА
+        if current_advice:
             html += f"""
-            <a href='{all_link}' target='_blank' style='display:block; text-align:center; padding:12px; background:#f0f7ff; color:#007BFF; text-decoration:none; border-radius:10px; font-weight:bold; font-size:13px; border:1px dashed #007BFF; margin-top:10px;'>
-                Показать еще {hidden_count} отелей в {city_en.capitalize()} →
+            <div style="background: #fff9e6; border: 1px solid #ffeaa7; border-radius: 12px; padding: 12px; margin: 20px 0; display: flex; gap: 10px; align-items: flex-start;">
+                <span style="font-size: 18px;">💡</span>
+                <div style="font-size: 13px; color: #d6a031; line-height: 1.4;">
+                    <b style="color: #b8860b; display: block; margin-bottom: 2px;">Полезный совет:</b>
+                    {current_advice}
+                </div>
+            </div>
+            """
+
+        all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
+        if hidden > 0:
+            html += f"""
+            <a href="{all_link}" target="_blank" style="display: block; text-align: center; padding: 14px; background: #f1f2f6; color: #2d3436; text-decoration: none; border-radius: 12px; font-weight: 700; font-size: 13px; border: 1px solid #dfe6e9;">
+                Показать еще {hidden} вариантов в {city_en.capitalize()} →
             </a>"""
         else:
-            html += f"<br><a href='{all_link}' target='_blank' style='display:block; text-align:center; padding:12px; background:#003580; color:#fff; text-decoration:none; border-radius:10px; font-weight:bold;'>Смотреть все на карте →</a>"
+            html += f"<a href='{all_link}' target='_blank' style='display: block; text-align:center; padding:14px; background: #2d3436; color: #fff; text-decoration:none; border-radius:12px; font-weight: 700;'>Смотреть всё на карте →</a>"
 
         html += "</div>"
         return JSONResponse(content={"reply": html})
