@@ -1,8 +1,9 @@
 import os
 import json
+import urllib.parse  # Добавили для правильных ссылок
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse # Добавили новый импорт
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import google.generativeai as genai
 
@@ -29,41 +30,40 @@ class ChatPayload(BaseModel):
 
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
-    # Добавляем в промпт требование игнорировать историю полностью
-    extract_prompt = f"Extract the city name from: '{payload.message}'. ONLY the city name in English. No context, no history. If no city, say 'none'."
+    # ШАГ 1: Извлекаем ТОЛЬКО название города (максимально строго)
+    extract_prompt = f"Identify the city in this message: '{payload.message}'. Reply ONLY with the city name in English. If no city, reply 'none'. No dots, no explanations."
     
     try:
         response = model.generate_content(extract_prompt)
-        new_city = response.text.strip().split('\n')[0].replace(".", "").replace("City:", "").strip()
+        # Очищаем результат от всего лишнего (пробелы, кавычки, точки)
+        new_city = response.text.strip().replace(".", "").replace("'", "").replace("\"", "").split('\n')[0].strip()
         
-        if "none" in new_city.lower() or len(new_city) < 2:
-            return JSONResponse(
-                content={"reply": "Назовите город, и я найду лучшие варианты!"},
-                headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
-            )
-            
+        if "none" in new_city.lower() or len(new_city) < 3:
+            return JSONResponse(content={"reply": "Привет! Напишите город, в который планируете поездку."})
+
+        # ШАГ 2: ПРАВИЛЬНО кодируем ссылку, чтобы она не ломалась при переходе
         booking_url = f"https://www.booking.com/searchresults.html?ss={new_city}"
-        stay22_link = f"https://www.stay22.com/allez/{STAY22_AID}?campaign=ai-bot&link={booking_url}"
+        encoded_url = urllib.parse.quote(booking_url, safe='')
+        stay22_link = f"https://www.stay22.com/allez/{STAY22_AID}?campaign=ai-bot&link={encoded_url}"
         
+        # ШАГ 3: Создаем ответ. Добавляем проверку города в текст для вас.
         answer_prompt = f"""
-        User wants {new_city}. Write 2 sentences in user's language. 
-        Add this button:
+        User is going to {new_city}. 
+        1. Write a 1-sentence greeting about {new_city} in Russian.
+        2. Mention 2 best areas.
+        3. Add this EXACT button:
         <br><br><a href='{stay22_link}' target='_blank' style='display:inline-block; padding:12px 24px; background:#007BFF; color:white; text-decoration:none; border-radius:8px; font-weight:bold;'>Посмотреть отели в {new_city}</a>
-        Return ONLY HTML.
+        <br><small style='color:gray;'>Локация определена как: {new_city}</small>
+        Return ONLY HTML. No markdown.
         """
         
         final_res = model.generate_content(answer_prompt)
         clean_html = final_res.text.replace("```html", "").replace("```", "").strip()
         
-        # Возвращаем ответ с ЗАПРЕТОМ на кеширование
         return JSONResponse(
             content={"reply": clean_html},
-            headers={
-                "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
         )
         
     except Exception as e:
-        return {"reply": f"Ошибка: {str(e)}"}
+        return {"reply": f"Ошибка: Попробуйте еще раз. ({str(e)})"}
