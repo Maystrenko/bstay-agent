@@ -4,7 +4,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
 
-# Вот она, та самая строчка, которую потерял Vercel!
 app = FastAPI()
 
 app.add_middleware(
@@ -17,13 +16,14 @@ app.add_middleware(
 
 # ==========================================
 # 1. ВАШИ КЛЮЧИ 
-# Вставьте ключ строго между кавычками!
 # ==========================================
 GEMINI_API_KEY = "AIzaSyA9A_2iWX83RstoFllyI_3K1FNJY6hoDhs" 
 STAY22_AID = "bstay24"
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+
+# БЕРЕМ САМУЮ БЫСТРУЮ И СОВРЕМЕННУЮ МОДЕЛЬ ИЗ ВАШЕГО СПИСКА!
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 class ChatPayload(BaseModel):
     user_id: str
@@ -69,9 +69,4 @@ async def handle_chat(payload: ChatPayload):
         return {"reply": final_response.text}
         
     except Exception as e:
-        try:
-            # Запрашиваем у Google список всех разрешенных нам моделей
-            allowed_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            return {"reply": f"Модель не найдена! Но Google говорит, что вам РАЗРЕШЕНЫ эти модели: {', '.join(allowed_models)}"}
-        except Exception:
-            return {"reply": f"Системная ошибка: {str(e)}"}
+        return {"reply": "Извините, сейчас слишком много людей ищут отели! Пожалуйста, попробуйте спросить еще раз через пару минут."}
