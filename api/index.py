@@ -69,4 +69,9 @@ async def handle_chat(payload: ChatPayload):
         return {"reply": final_response.text}
         
     except Exception as e:
-        return {"reply": f"Системная ошибка: {str(e)}"}
+        try:
+            # Запрашиваем у Google список всех разрешенных нам моделей
+            allowed_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            return {"reply": f"Модель не найдена! Но Google говорит, что вам РАЗРЕШЕНЫ эти модели: {', '.join(allowed_models)}"}
+        except Exception:
+            return {"reply": f"Системная ошибка: {str(e)}"}
