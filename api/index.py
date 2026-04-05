@@ -18,7 +18,7 @@ app.add_middleware(
 # 1. ВАШИ КЛЮЧИ 
 # ==========================================
 GEMINI_API_KEY = "AIzaSyA9A_2iWX83RstoFllyI_3K1FNJY6hoDhs" 
-STAY22_AID = "bstay24"
+STAY22_AID = "btr"
 
 genai.configure(api_key=GEMINI_API_KEY)
 
