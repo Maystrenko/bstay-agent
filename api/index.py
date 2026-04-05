@@ -67,4 +67,4 @@ async def handle_chat(payload: ChatPayload):
         return {"reply": final_res.text.replace("```html", "").replace("```", "").strip()}
         
     except Exception as e:
-        return {"reply": "Упс! Попробуйте написать название города еще раз."}
+        return {"reply": f"Ошибка отладки: {str(e)} | Ответ ИИ: {response.text if 'response' in locals() else 'нет ответа'}"}
