@@ -7,7 +7,7 @@ import google.generativeai as genai
 # ==========================================
 # 1. ВАШИ КЛЮЧИ (ОБЯЗАТЕЛЬНО ЗАПОЛНИТЕ!)
 # ==========================================
-GEMINI_API_KEY = "ВСТАВЬТЕ_СЮДА_ВАШ_КЛЮЧ_GEMINI" 
+GEMINI_API_KEY = "AIzaSyBU84AxosDtFbjvELsJgZLa8v9EBO9QuHs" 
 STAY22_AID = "bstay24" # Ваш ID в партнерской программе Stay22
 
 # Настройка нейросети
