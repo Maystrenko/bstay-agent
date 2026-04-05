@@ -16,7 +16,7 @@ app.add_middleware(
 )
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
-STAY22_AID = "btr"
+STAY22_AID = "bstay24"
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -29,44 +29,42 @@ class ChatPayload(BaseModel):
 
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
-    # УЛУЧШЕННАЯ ИНСТРУКЦИЯ: Заставляем ИИ всегда проверять наличие НОВОГО города
-    system_instructions = """
-    Ты - тур-агент bstay24. Твоя главная задача: определить, какой город пользователь ищет ПРЯМО СЕЙЧАС.
-    Игнорируй предыдущие города из истории, если в новом сообщении указан другой город.
-    Если есть новый город: верни ТОЛЬКО JSON {"status": "search", "city": "City Name in English"}
-    Если города нет и это просто беседа: верни JSON {"status": "chat", "reply": "Текст ответа"}
+    # ШАГ 1: Анализ города БЕЗ истории чата (чтобы не тянуть Манчестер)
+    intent_prompt = f"""
+    Проанализируй только это сообщение: "{payload.message}"
+    Если в нем есть название города или страны, верни СТРОГО JSON: {{"status": "search", "city": "City name in English"}}
+    Если города нет, верни JSON: {{"status": "chat", "reply": "Твой ответ"}}
+    Игнорируй любые предыдущие города.
     """
     
-    # Мы передаем только последнее сообщение для анализа города, чтобы не было путаницы с Манчестером
-    analysis_prompt = f"{system_instructions}\nСообщение пользователя: {payload.message}"
-    
     try:
-        response = model.generate_content(analysis_prompt)
-        result_text = response.text.replace("```json", "").replace("```", "").strip()
-        start = result_text.find('{')
-        end = result_text.rfind('}') + 1
-        data = json.loads(result_text[start:end])
+        response = model.generate_content(intent_prompt)
+        res_text = response.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(res_text[res_text.find('{'):res_text.rfind('}')+1])
         
+        # Если это просто разговор
         if data.get("status") == "chat":
             return {"reply": data["reply"].replace("```html", "").replace("```", "").strip()}
             
-        city = data.get("city")
+        # Если найден НОВЫЙ город
+        new_city = data.get("city")
         
-        # Генерируем ссылку строго под новый город
-        booking_url = f"https://www.booking.com/searchresults.html?ss={city}"
+        # Генерируем ссылку СТРОГО под этот город
+        # ss={new_city} — это главный параметр для Booking
+        booking_url = f"https://www.booking.com/searchresults.html?ss={new_city}"
         stay22_link = f"https://www.stay22.com/allez/{STAY22_AID}?campaign=ai-bot&link={booking_url}"
         
-        # Формируем ответ именно про НОВЫЙ город
-        answer_prompt = f"""
-        Напиши кратко (2 предложения) про отдых в {city}. 
-        Посоветуй 2 района.
-        В конце добавь кнопку (не меняй код):
-        <br><br><a href='{stay22_link}' target='_blank' style='display:inline-block; padding:12px 24px; background:#007BFF; color:white; text-decoration:none; border-radius:8px; font-weight:bold;'>Посмотреть отели в {city}</a>
-        Верни ТОЛЬКО HTML. Без Markdown.
+        # ШАГ 2: Пишем ответ именно про этот город
+        final_prompt = f"""
+        Напиши краткий привет в 2 предложениях для тех, кто едет в {new_city}. 
+        Посоветуй 2 крутых района. 
+        Заверши ответ ЭТОЙ кнопкой:
+        <br><br><a href='{stay22_link}' target='_blank' style='display:inline-block; padding:12px 24px; background:#007BFF; color:white; text-decoration:none; border-radius:8px; font-weight:bold;'>Посмотреть отели в {new_city}</a>
+        Верни ТОЛЬКО HTML без Markdown.
         """
         
-        final_response = model.generate_content(answer_prompt)
-        return {"reply": final_response.text.replace("```html", "").replace("```", "").strip()}
+        final_res = model.generate_content(final_prompt)
+        return {"reply": final_res.text.replace("```html", "").replace("```", "").strip()}
         
     except Exception as e:
-        return {"reply": f"Ошибка: {str(e)}"}
+        return {"reply": "Упс! Попробуйте написать название города еще раз."}
