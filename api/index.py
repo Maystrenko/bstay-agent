@@ -13,7 +13,6 @@ from pydantic import BaseModel
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# Ключи
 gemini_keys = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
@@ -33,32 +32,20 @@ def get_hotels_safe(city_name, lang='ru'):
     headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": RAPID_HOST}
     
     try:
-        # 1. Поиск локации (stays/auto-complete)
+        # 1. Поиск ID города
         loc_res = requests.get(f"https://{RAPID_HOST}/stays/auto-complete", 
                                headers=headers, params={"query": city_name}, timeout=6)
-        
-        if loc_res.status_code != 200:
-            return None, f"Loc Http {loc_res.status_code}"
-            
         raw_loc = loc_res.json()
-        
-        # Исправляем ошибку 'list' object has no attribute 'get'
-        if isinstance(raw_loc, list):
-            loc_data = raw_loc
-        else:
-            loc_data = raw_loc.get('data', [])
-
+        loc_data = raw_loc if isinstance(raw_loc, list) else raw_loc.get('data', [])
         if not loc_data: return None, "City not found"
         
-        # Берем ID первого результата
         dest_id = loc_data[0].get('id')
-        if not dest_id: return None, "No ID in loc"
 
-        # 2. Даты
+        # 2. Даты (30 дней вперед)
         checkin = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         checkout = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
 
-        # 3. Поиск отелей (stays/search)
+        # 3. Поиск отелей
         search_params = {
             "locationId": dest_id,
             "checkinDate": checkin,
@@ -72,41 +59,33 @@ def get_hotels_safe(city_name, lang='ru'):
         
         search_res = requests.get(f"https://{RAPID_HOST}/stays/search", 
                                   headers=headers, params=search_params, timeout=10)
-        
-        if search_res.status_code != 200:
-            return None, f"Search Http {search_res.status_code}"
-
         search_data = search_res.json()
         
-        # Защита от пустых данных
-        hotels = []
-        if isinstance(search_data, list):
-            hotels = search_data
-        elif isinstance(search_data, dict):
-            # В разных версиях API отели могут быть в разных ключах
-            data_block = search_data.get('data', {})
-            if isinstance(data_block, list):
-                hotels = data_block
-            else:
-                hotels = data_block.get('hotels', []) or data_block.get('results', [])
-
-        if not hotels: return None, "No hotels found"
-            
+        # Разбираем структуру ответа (stays/search обычно возвращает data -> hotels)
+        data_block = search_data.get('data', {})
+        hotels = data_block.get('hotels', []) or data_block.get('results', []) or (search_data if isinstance(search_data, list) else [])
+        
         return hotels[:3], None
         
     except Exception as e:
-        # Теперь мы увидим точную ошибку, если она случится
-        return None, f"Err: {str(e)[:20]}"
+        return None, f"Err: {str(e)[:15]}"
 
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
     try:
         t_lang = LANG_MAP.get(payload.lang, "Russian")
-        prompt = f"Extract city (English) and write 2-sentence greeting in {t_lang}. User: {payload.message}. Return JSON: {{\"city\": \"City\", \"text\": \"Greeting\"}}"
+        prompt = f"""
+        You are a travel pro for bstay24.com.
+        Analyze: "{payload.message}"
+        Extract city (English) and write a 2-sentence vibe-check in {t_lang}. 
+        Don't be a robot. Say something like 'Oh, London is a vibe!'
+        Return JSON ONLY: {{"city": "City", "text": "Greeting"}}
+        """
         
         ai_res = None
         engine = "None"
 
+        # Пробуем Groq (работает стабильно)
         if groq_keys:
             try:
                 g_key = random.choice(groq_keys)
@@ -118,40 +97,41 @@ async def handle_chat(payload: ChatPayload):
                 engine = "Groq"
             except: pass
 
-        if not ai_res: return JSONResponse(content={"reply": "AI error."})
+        if not ai_res: return JSONResponse(content={"reply": "AI is taking a nap. Try again!"})
 
         data = json.loads(ai_res[ai_res.find('{'):ai_res.rfind('}')+1])
         city = data.get("city", "none")
-        greeting = data.get("text", "Готово!")
+        greeting = data.get("text", "Searching...")
 
         hotels_html = ""
         api_info = "Live"
         
-        if city.lower() != "none" and len(city) > 2:
+        if city.lower() != "none":
             hotels, err = get_hotels_safe(city, payload.lang)
             if hotels:
-                hotels_html = "<div style='margin-top:15px; display:flex; flex-direction:column; gap:10px;'>"
+                hotels_html = "<div style='margin-top:15px; display:flex; flex-direction:column; gap:12px;'>"
                 for h in hotels:
-                    name = h.get('name') or h.get('hotel_name', 'Hotel')
+                    # ИСПРАВЛЕННЫЙ ПАРСИНГ ДЛЯ ВЕРСИИ 18
+                    name = h.get('name') or h.get('hotel_name', 'Great Hotel')
                     
-                    # Безопасное извлечение цены
-                    price_val = "?"
-                    p_obj = h.get('price', {})
-                    if isinstance(p_obj, dict):
-                        price_val = p_obj.get('displayPrice') or p_obj.get('amount') or "?"
+                    # Пытаемся найти цену (проверяем все возможные поля)
+                    p_info = h.get('priceDetails') or h.get('price') or {}
+                    price_str = str(p_info.get('grossAmount') or p_info.get('displayPrice') or h.get('min_total_price') or "0")
+                    price = "".join(filter(str.isdigit, price_str)) or "?"
                     
-                    price = "".join(filter(str.isdigit, str(price_val))) or "?"
-                    img = h.get('mainPhotoUrl') or h.get('main_photo_url', '')
+                    # Пытаемся найти фото (проверяем все возможные поля)
+                    img = h.get('mainPhotoUrl') or h.get('main_photo_url') or (h.get('wishlist_data', {}).get('main_photo_url'))
+                    if img and 'square60' in img: img = img.replace('square60', 'square300')
                     
                     link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name)}"
                     
                     hotels_html += f"""
-                    <div style='background:#fff; border:1px solid #eee; border-radius:12px; overflow:hidden; box-shadow:0 4px 10px rgba(0,0,0,0.1);'>
-                        {f"<img src='{img}' style='width:100%; height:130px; object-fit:cover;'>" if img else ""}
+                    <div style='background:#fff; border:1px solid #eee; border-radius:12px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.1);'>
+                        {f"<img src='{img}' style='width:100%; height:140px; object-fit:cover; display:block;'>" if img else ""}
                         <div style='padding:12px;'>
-                            <div style='font-weight:bold; font-size:14px;'>{name}</div>
-                            <div style='font-size:12px; color:#28a745; margin:5px 0; font-weight:bold;'>от {price} USD за 3 ночи</div>
-                            <a href='{link}' target='_blank' style='display:block; text-align:center; padding:10px; background:#007BFF; color:white; text-decoration:none; border-radius:6px; font-weight:bold; font-size:12px;'>Выбрать номер</a>
+                            <div style='font-weight:bold; font-size:15px; color:#333;'>{name}</div>
+                            <div style='font-size:13px; color:#28a745; margin:6px 0; font-weight:bold;'>от {price} USD за 3 ночи</div>
+                            <a href='{link}' target='_blank' style='display:block; text-align:center; padding:10px; background:#007BFF; color:white; text-decoration:none; border-radius:8px; font-weight:bold; font-size:13px;'>Выбрать номер</a>
                         </div>
                     </div>"""
                 hotels_html += "</div>"
@@ -159,11 +139,11 @@ async def handle_chat(payload: ChatPayload):
 
         city_enc = urllib.parse.quote(city)
         main_url = f"https://www.stay22.com/allez/{STAY22_AID}?address={city_enc}&link=https://www.booking.com/searchresults.html?ss={city_enc}"
-        btn_text = f"🏨 Все отели в {city}" if payload.lang == 'ru' else f"🏨 View hotels in {city}"
+        btn_text = f"🏨 Все отели в {city}" if payload.lang == 'ru' else f"🏨 View all in {city}"
         
         footer = f"<br><a href='{main_url}' target='_blank' style='display:inline-block; padding:15px; background:#003580; color:white; text-decoration:none; border-radius:8px; font-weight:bold; width:100%; text-align:center; box-sizing:border-box;'>{btn_text}</a><br><small style='color:gray; font-size:9px;'>Engine: {engine} | API: {api_info}</small>"
 
         return JSONResponse(content={"reply": greeting + hotels_html + footer})
 
     except Exception as e:
-        return JSONResponse(content={"reply": f"System error: {str(e)}"})
+        return JSONResponse(content={"reply": f"Error: {str(e)}"})
