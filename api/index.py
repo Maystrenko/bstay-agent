@@ -14,29 +14,37 @@ from upstash_redis import Redis
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- БЛОК ПОДКЛЮЧЕНИЯ К БАЗЕ (Исправлено для Vercel) ---
+# --- УМНОЕ ПОДКЛЮЧЕНИЕ К REDIS (САМОВЗЛОМ URL) ---
+redis = None
 try:
-    # Пробуем достать данные из разных возможных имен переменных Vercel
-    u = os.environ.get("UPSTASH_REDIS_REST_URL") or os.environ.get("REDIS_URL")
-    t = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+    # Пробуем все варианты имен переменных
+    raw_url = os.environ.get("REDIS_URL") or os.environ.get("UPSTASH_REDIS_REST_URL")
+    token = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
     
-    if u and t:
-        # Если есть и URL и Token отдельно
-        redis = Redis(url=u, token=t)
-        print("✅ Redis: Connected via URL and Token")
-    elif u:
-        # Если есть только URL, принудительно ставим его в окружение для библиотеки
-        os.environ["UPSTASH_REDIS_REST_URL"] = u
-        redis = Redis.from_env()
-        print("✅ Redis: Connected via Environment URL")
+    if raw_url and raw_url.startswith("redis://"):
+        # Если Vercel дал только одну строку redis://default:TOKEN@HOST:PORT
+        # Мы вытаскиваем из неё TOKEN и HOST для работы через Python
+        match = re.search(r"redis://default:(.*?)@(.*?):(\d+)", raw_url)
+        if match:
+            extracted_token = match.group(1)
+            extracted_host = match.group(2)
+            # Для библиотеки Upstash Python нужен HTTPS адрес
+            rest_url = f"https://{extracted_host}"
+            redis = Redis(url=rest_url, token=extracted_token)
+            print("✅ Redis: Connected via Parsed REDIS_URL")
+    elif raw_url and token:
+        # Если ты прописал переменные вручную
+        redis = Redis(url=raw_url, token=token)
+        print("✅ Redis: Connected via Manual Env")
     else:
-        redis = None
-        print("⚠️ Redis: Environment variables not found")
+        # План Б: стандартный метод
+        redis = Redis.from_env()
+        print("✅ Redis: Connected via from_env")
 except Exception as e:
+    print(f"❌ Redis Connection Error: {e}")
     redis = None
-    print(f"❌ Redis Init Error: {e}")
 
-# Конфигурация ключей и API
+# Настройки API
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
 RAPID_HOST = "booking-com18.p.rapidapi.com"
@@ -47,35 +55,30 @@ class ChatPayload(BaseModel):
     lang: str = "en"
     chat_history: list = []
 
-def get_hotels_from_api(city, intent="general"):
-    """Запрос к Booking API через RapidAPI"""
+def get_hotels_api(city, intent="general"):
+    """Запрос к Booking API"""
     try:
-        headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": RAPID_HOST}
-        # 1. Поиск ID локации
-        l_res = requests.get(f"https://{RAPID_HOST}/stays/auto-complete", headers=headers, params={"query": city}, timeout=10)
-        l_data = l_res.json().get('data', [])
-        if not l_data: return None
-        dest_id = l_data[0]['id']
+        h = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": RAPID_HOST}
+        # 1. Поиск города
+        l_r = requests.get(f"https://{RAPID_HOST}/stays/auto-complete", headers=h, params={"query": city}, timeout=10)
+        d_id = l_r.json()['data'][0]['id']
         
-        # 2. Поиск отелей (через 30 дней на 3 ночи)
-        params = {
-            "locationId": dest_id, 
+        # 2. Поиск отелей (через 30 дней)
+        p = {
+            "locationId": d_id, 
             "checkinDate": (datetime.now()+timedelta(days=30)).strftime('%Y-%m-%d'),
             "checkoutDate": (datetime.now()+timedelta(days=33)).strftime('%Y-%m-%d'),
             "adults": "2", "currency_code": "USD"
         }
         if intent == "cheap":
-            params["sortBy"] = "price_lowest"
-            
-        h_res = requests.get(f"https://{RAPID_HOST}/stays/search", headers=headers, params=params, timeout=15)
-        h_json = h_res.json()
-        raw = h_json.get('data', [])
+            p["sortBy"] = "price_lowest"
+        
+        res = requests.get(f"https://{RAPID_HOST}/stays/search", headers=h, params=p, timeout=15)
+        raw = res.json().get('data', [])
         if not isinstance(raw, list):
-            raw = h_json.get('data', {}).get('hotels', []) or h_json.get('data', {}).get('results', [])
-            
-        return [{"id": str(h.get('hotel_id') or h.get('id')), "name": h.get('name') or h.get('hotel_name')} for h in raw if h.get('id') or h.get('hotel_id')][:6]
-    except Exception as e:
-        print(f"RapidAPI Error: {e}")
+            raw = res.json().get('data', {}).get('hotels', [])
+        return [{"id": str(x.get('hotel_id') or x.get('id')), "name": x.get('name') or x.get('hotel_name')} for x in raw if x.get('id') or x.get('hotel_id')][:6]
+    except:
         return None
 
 @app.post("/api/chat")
@@ -87,51 +90,42 @@ async def handle_chat(payload: ChatPayload):
         g_key = random.choice(groq_keys)
         headers = {"Authorization": f"Bearer {g_key}"}
 
-        # --- 1. ОПРЕДЕЛЯЕМ ГОРОД И ИНТЕНТ ---
-        c_sys = "Extract city and intent (cheap/general). JSON ONLY: {'c': 'London', 't': 'cheap'}. Normalize city to English."
+        # 1. Распознаем город и тип (дешево/общее)
+        c_p = "Extract city and intent (cheap/general). JSON: {'c': 'London', 't': 'cheap'}"
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
-            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "system", "content": c_sys}, {"role": "user", "content": msg}], "response_format": {"type": "json_object"}}, timeout=10)
+            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "system", "content": c_p}, {"role": "user", "content": msg}], "response_format": {"type": "json_object"}}, timeout=10)
         ext = json.loads(c_res.json()['choices'][0]['message']['content'])
         city, intent = ext.get("c", "none"), ext.get("t", "general")
 
-        if city == "none" or len(city) < 2:
-            return JSONResponse(content={"reply": "Пожалуйста, напишите название города." if user_lang == "ru" else "Please specify a city."})
+        if city == "none":
+            return JSONResponse(content={"reply": "Укажите название города."})
 
-        # --- 2. ПРОВЕРЯЕМ БАЗУ ДАННЫХ (REDIS) ---
+        # 2. ПРОВЕРКА БАЗЫ (REDIS)
         db_key = f"h:{city.lower()}:{intent}:{user_lang}"
         if redis:
             try:
-                cached_html = redis.get(db_key)
-                if cached_html:
-                    # Если нашли в базе - отдаем мгновенно!
-                    return JSONResponse(content={"reply": cached_html})
-            except Exception as e:
-                print(f"Redis Read Error: {e}")
+                cached = redis.get(db_key)
+                if cached: return JSONResponse(content={"reply": cached})
+            except: pass
 
-        # --- 3. ЕСЛИ НЕТ В БАЗЕ - ИДЕМ В API ---
-        hotels = get_hotels_from_api(city, intent)
+        # 3. ЕСЛИ НЕТ В БАЗЕ - API
+        hotels = get_hotels_api(city, intent)
         if not hotels:
-            return JSONResponse(content={"reply": "Отели не найдены. Попробуйте другой город."})
+            return JSONResponse(content={"reply": f"Отели в {city} не найдены."})
 
-        # --- 4. ГЕНЕРИРУЕМ КРАСИВЫЙ ОТВЕТ ЧЕРЕЗ ИИ ---
-        lang_full = "Russian" if user_lang == "ru" else "English"
-        btn = "Забронировать" if user_lang == "ru" else "Book"
-        
-        if intent == "cheap":
-            g_prompt = f"List 3 cheapest hotels in {city} in {lang_full}. Use: {json.dumps(hotels)}. JSON: {{'i': 'intro', 'cats': [ {{'n': 'Budget #1', 'h': {{'id': 'id', 'n': 'name', 'd': 'desc'}} }} ]}}"
-        else:
-            g_prompt = f"Create Top-3 hotel guide for {city} in {lang_full}. Use: {json.dumps(hotels)}. JSON: {{'i': 'intro', 'cats': [ {{'n': 'Category', 'h': {{'id': 'id', 'n': 'name', 'd': 'desc'}} }} ]}}"
-
+        # 4. ГЕНЕРАЦИЯ ОТВЕТА
+        l_f = "Russian" if user_lang == "ru" else "English"
+        g_p = f"Create Top-3 hotel guide for {city} in {l_f}. Use: {json.dumps(hotels)}. JSON: {{'i': 'intro', 'cats': [ {{'n': 'Category', 'h': {{'id': 'id', 'n': 'name', 'd': 'desc'}} }} ]}}"
         g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
-            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
+            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_p}], "response_format": {"type": "json_object"}}, timeout=15)
         g = json.loads(g_res.json()['choices'][0]['message']['content'])
 
-        # Исправляем .intro если ИИ выдал техническое слово
+        # Защита от кривого вступления
         intro = g.get('i', '')
-        if len(intro) < 10 or intro.lower().startswith('.intro'):
-            intro = f"Вот отличные варианты в городе {city.capitalize()}:" if user_lang == "ru" else f"Here are great options in {city.capitalize()}:"
+        if len(intro) < 10 or ".intro" in intro.lower():
+            intro = f"Вот отличные отели в {city.capitalize()}:"
 
-        # Сборка HTML карточек
+        btn = "Забронировать" if user_lang == "ru" else "Book"
         html = f"<div style='font-family:Karla,sans-serif;'><p>{intro}</p>"
         for cat in g['cats']:
             h = cat['h']
@@ -149,20 +143,13 @@ async def handle_chat(payload: ChatPayload):
             </div>"""
         
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city)}"
-        if intent == "cheap": all_link += "&sortby=price_lowest"
-        
-        html += f"<br><a href='{all_link}' target='_blank' style='display:block; text-align:center; padding:15px; background:#003580; color:#fff; text-decoration:none; border-radius:10px; font-weight:bold;'>Смотреть все варианты →</a></div>"
+        html += f"<br><a href='{all_link}' target='_blank' style='display:block; text-align:center; padding:15px; background:#003580; color:#fff; text-decoration:none; border-radius:10px; font-weight:bold;'>Смотреть все →</a></div>"
 
-        # --- 5. СОХРАНЯЕМ В БАЗУ НА БУДУЩЕЕ ---
+        # 5. СОХРАНЕНИЕ В БАЗУ
         if redis:
-            try:
-                redis.set(db_key, html)
-                print(f"✅ Saved to Cache: {db_key}")
-            except Exception as e:
-                print(f"Redis Write Error: {e}")
+            try: redis.set(db_key, html)
+            except: pass
 
         return JSONResponse(content={"reply": html})
-
-    except Exception as e:
-        print(f"Global Error: {e}")
-        return JSONResponse(content={"reply": "Ошибка соединения. Пожалуйста, попробуйте еще раз."})
+    except:
+        return JSONResponse(content={"reply": "Ошибка. Попробуйте еще раз."})
