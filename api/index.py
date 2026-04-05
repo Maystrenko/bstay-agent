@@ -10,7 +10,7 @@ import google.generativeai as genai
 
 app = FastAPI()
 
-# Настройка CORS для вашего сайта
+# Разрешаем вашему сайту bstay24.com обращаться к серверу
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,14 +19,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Настройки ключей (берутся из Environment Variables в Vercel)
+# Загружаем настройки
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
 STAY22_AID = "bstay24"
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Используем стабильную модель с лимитом 1500 запросов в день
+# Используем gemini-flash-latest (стабильные 1500 запросов в день)
 model = genai.GenerativeModel('gemini-flash-latest')
 
 class ChatPayload(BaseModel):
@@ -37,44 +37,50 @@ class ChatPayload(BaseModel):
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
     try:
-        current_time = str(time.time())
+        current_time = str(int(time.time()))
         
-        # ШАГ 1: Извлекаем город строго из последнего сообщения (игнорируем историю)
-        extract_prompt = f"""
-        Extract ONLY the city name in English from this message: '{payload.message}'. 
-        Ignore any previous context. If no city, say 'none'. 
-        Reply with ONE WORD only.
-        """
+        # ШАГ 1: Извлекаем город (игнорируем историю для точности)
+        extract_prompt = f"Extract ONLY the city name in English from: '{payload.message}'. One word only. If none, say 'none'."
         response = model.generate_content(extract_prompt)
         detected_city = response.text.strip().split('\n')[0].replace(".", "").replace("'", "").strip()
         
         if "none" in detected_city.lower() or len(detected_city) < 3:
-            return JSONResponse(content={"reply": "Привет! В какой город вы ищете отель?"})
+            return JSONResponse(content={"reply": "Привет! Назовите город, в котором вы ищете жилье?"})
 
-        # ШАГ 2: Формируем прямую ссылку на Booking через Stay22
-        city_query = urllib.parse.quote(detected_city)
-        # Добавляем метку времени &t=, чтобы ссылка всегда была уникальной для браузера
-        booking_url = f"https://www.booking.com/searchresults.html?ss={city_query}&lang=ru&t={current_time}"
-        final_link = f"https://www.stay22.com/allez/{STAY22_AID}?campaign=ai-bot&link={urllib.parse.quote(booking_url)}"
+        # ШАГ 2: Формируем "бронебойную" ссылку Stay22
+        # Мы добавляем параметр 'address', чтобы Stay22 не подставлял Манчестер автоматически
+        booking_url = f"https://www.booking.com/searchresults.html?ss={urllib.parse.quote(detected_city)}&lang=ru"
         
-        # ШАГ 3: Текст ответа ИИ
-        answer_prompt = f"Напиши 2 коротких предложения на русском языке о поездке в {detected_city}. Будь вежлив."
+        params = {
+            "campaign": "ai-bot",
+            "link": booking_url,
+            "address": detected_city, # Принудительный город
+            "t": current_time         # Уникальный ID для сброса кеша
+        }
+        
+        stay22_link = f"https://www.stay22.com/allez/{STAY22_AID}?{urllib.parse.urlencode(params)}"
+        
+        # ШАГ 3: Пишем ответ пользователю
+        answer_prompt = f"Write 2 short friendly sentences in Russian about visiting {detected_city}. No markdown."
         final_res = model.generate_content(answer_prompt)
-        ai_text = final_res.text.replace("```html", "").replace("```", "").strip()
+        ai_text = final_res.text.strip()
 
-        # HTML-кнопка
+        # HTML-кнопка в стиле вашего бренда
         button_html = f"""
         <br><br>
-        <a href='{final_link}' target='_blank' style='display:inline-block; padding:14px 28px; background:#003580; color:white; text-decoration:none; border-radius:4px; font-weight:bold; font-family:Arial,sans-serif;'>
-           🏨 Посмотреть отели в {detected_city}
+        <a href='{stay22_link}' target='_blank' style='display:inline-block; padding:14px 28px; background:#003580; color:white; text-decoration:none; border-radius:6px; font-weight:bold; font-family:Arial,sans-serif; box-shadow: 0 2px 5px rgba(0,0,0,0.2);'>
+           🏨 Найти отели в {detected_city}
         </a>
-        <br><small style='color:gray; font-size:9px;'>Локация: {detected_city}</small>
+        <br><small style='color:gray; font-size:9px;'>Маршрут: {detected_city} | bstay24</small>
         """
         
         return JSONResponse(
             content={"reply": ai_text + button_html},
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache"
+            }
         )
         
     except Exception as e:
-        return JSONResponse(content={"reply": f"Ошибка: {str(e)}"})
+        return JSONResponse(content={"reply": f"Извините, произошла техническая заминка. Попробуйте еще раз. ({str(e)})"})
