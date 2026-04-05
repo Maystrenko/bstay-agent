@@ -13,6 +13,7 @@ from pydantic import BaseModel
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# Ключи из Vercel
 gemini_keys = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
@@ -32,20 +33,17 @@ def get_hotels_safe(city_name, lang='ru'):
     headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": RAPID_HOST}
     
     try:
-        # 1. Автодополнение города
+        # 1. Получаем ID города (stays/auto-complete)
         loc_res = requests.get(f"https://{RAPID_HOST}/stays/auto-complete", 
                                headers=headers, params={"query": city_name}, timeout=6)
         
         if loc_res.status_code != 200:
             return None, f"Loc Error {loc_res.status_code}"
             
-        loc_json = loc_res.json()
-        loc_data = loc_json.get('data', [])
+        loc_data = loc_res.json().get('data', [])
+        if not loc_data: return None, "City not in DB"
         
-        if not loc_data or not isinstance(loc_data, list):
-            return None, "City not in DB"
-        
-        # Ищем именно город (тип может быть разным, берем первый доступный ID)
+        # ID из автокомплита
         dest_id = loc_data[0].get('id')
         if not dest_id: return None, "No ID found"
 
@@ -53,9 +51,9 @@ def get_hotels_safe(city_name, lang='ru'):
         checkin = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         checkout = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
 
-        # 3. Поиск отелей
+        # 3. ПОИСК ОТЕЛЕЙ (ИСПРАВЛЕНО: locationId вместо id)
         search_params = {
-            "id": dest_id,
+            "locationId": dest_id, # Исправлено под твою ошибку!
             "checkinDate": checkin,
             "checkoutDate": checkout,
             "adults": "2",
@@ -68,21 +66,15 @@ def get_hotels_safe(city_name, lang='ru'):
         search_res = requests.get(f"https://{RAPID_HOST}/stays/search", 
                                   headers=headers, params=search_params, timeout=10)
         
-        if search_res.status_code != 200:
-            return None, f"Search HTTP {search_res.status_code}"
-
         search_json = search_res.json()
-        data_block = search_json.get('data')
         
-        # Если data пустая, выводим часть JSON для диагностики
-        if not data_block:
-            raw_preview = str(search_json)[:50]
-            return None, f"Empty Data: {raw_preview}"
+        # Если API вернуло ошибку в JSON (как у тебя на скрине)
+        if not search_json.get('status', True) or search_json.get('data') is None:
+            err_detail = str(search_json.get('errors', 'Empty data'))
+            return None, f"API Logic: {err_detail[:30]}"
             
-        hotels = data_block.get('hotels', []) or data_block.get('results', [])
-        
-        if not hotels:
-            return None, "No hotels available"
+        hotels = search_json['data'].get('hotels', []) or search_json['data'].get('results', [])
+        if not hotels: return None, "No hotels now"
             
         return hotels[:3], None
         
@@ -98,6 +90,7 @@ async def handle_chat(payload: ChatPayload):
         ai_res = None
         engine = "None"
 
+        # Пробуем Groq (работает стабильно)
         if groq_keys:
             try:
                 g_key = random.choice(groq_keys)
@@ -111,9 +104,10 @@ async def handle_chat(payload: ChatPayload):
 
         if not ai_res: return JSONResponse(content={"reply": "AI error."})
 
+        # Парсинг ответа
         data = json.loads(ai_res[ai_res.find('{'):ai_res.rfind('}')+1])
         city = data.get("city", "none")
-        greeting = data.get("text", "Готово!")
+        greeting = data.get("text", "Нашел!")
 
         hotels_html = ""
         api_info = "Live"
@@ -124,12 +118,12 @@ async def handle_chat(payload: ChatPayload):
                 hotels_html = "<div style='margin-top:15px; display:flex; flex-direction:column; gap:10px;'>"
                 for h in hotels:
                     name = h.get('name') or h.get('hotel_name', 'Hotel')
-                    # Пробуем разные способы достать цену
+                    # Умный поиск цены
                     price_val = "0"
                     if h.get('price'):
                         price_val = h['price'].get('displayPrice') or h['price'].get('amount') or "0"
                     
-                    price = "".join(filter(str.isdigit, str(price_val))) or "0"
+                    price = "".join(filter(str.isdigit, str(price_val))) or "?"
                     img = h.get('mainPhotoUrl') or h.get('main_photo_url', '')
                     
                     link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name)}"
@@ -150,9 +144,9 @@ async def handle_chat(payload: ChatPayload):
         main_url = f"https://www.stay22.com/allez/{STAY22_AID}?address={city_enc}&link=https://www.booking.com/searchresults.html?ss={city_enc}"
         btn_text = f"🏨 Все отели в {city}" if payload.lang == 'ru' else f"🏨 View hotels in {city}"
         
-        footer = f"<br><a href='{main_url}' target='_blank' style='display:inline-block; padding:15px; background:#003580; color:white; text-decoration:none; border-radius:8px; font-weight:bold; width:100%; text-align:center; box-sizing:border-box;'>{btn_text}</a><br><small style='color:gray; font-size:9px;'>Engine: {engine} | {api_info}</small>"
+        footer = f"<br><a href='{main_url}' target='_blank' style='display:inline-block; padding:15px; background:#003580; color:white; text-decoration:none; border-radius:8px; font-weight:bold; width:100%; text-align:center; box-sizing:border-box;'>{btn_text}</a><br><small style='color:gray; font-size:9px;'>Engine: {engine} | API: {api_info}</small>"
 
         return JSONResponse(content={"reply": greeting + hotels_html + footer})
 
     except Exception as e:
-        return JSONResponse(content={"reply": f"Error: {str(e)}"})
+        return JSONResponse(content={"reply": f"Ошибка: {str(e)}"})
