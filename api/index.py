@@ -62,7 +62,7 @@ async def handle_chat(payload: ChatPayload):
         Напиши приветливый текст. Кратко посоветуй 2 отличных района для туристов.
         Заверши ответ этой HTML-кнопкой (не меняй её код):
         <br><br><a href='{stay22_link}' target='_blank' style='display:inline-block; padding:12px 24px; background:#007BFF; color:white; text-decoration:none; border-radius:8px; font-weight:bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>Посмотреть отели и цены в {city}</a>
-        Верни ТОЛЬКО готовый HTML-код ответа.
+        Верни ТОЛЬКО чистый HTML-код БЕЗ использования знаков ``` или слова html. Только содержимое.
         """
         
         final_response = model.generate_content(answer_prompt)
