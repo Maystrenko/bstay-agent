@@ -18,41 +18,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Берем список ключей (в Vercel вставляй их через запятую: key1,key2,key3)
+# ЧИТАЕМ КЛЮЧИ
 raw_keys = os.environ.get("GEMINI_API_KEY", "")
 API_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
 STAY22_AID = "bstay24"
 
 MODELS_TO_TRY = ["gemini-1.5-flash-8b", "gemini-1.5-flash", "gemini-2.0-flash-lite"]
 
-# Словарь для превращения кода языка в полное название для ИИ
 LANG_MAP = {
-    'ru': 'Russian',
-    'en': 'English',
-    'de': 'German',
-    'fr': 'French',
-    'es': 'Spanish'
+    'ru': 'Russian', 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish'
 }
 
 class ChatPayload(BaseModel):
     user_id: str
     message: str
     chat_history: list
-    lang: str = "en" # <-- Принимаем язык (по умолчанию английский)
+    lang: str = "en"
 
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
+    debug_log = "" # Собираем ошибки сюда
     try:
         if not API_KEYS:
-            return JSONResponse(content={"reply": "API Key missing"})
+            return JSONResponse(content={"reply": "Критическая ошибка: Ключи API не найдены в настройках Vercel!"})
 
-        # Ротация ключей: выбираем случайный
-        genai.configure(api_key=random.choice(API_KEYS))
+        # Берем случайный ключ
+        selected_key = random.choice(API_KEYS)
+        genai.configure(api_key=selected_key)
         
         current_time = str(int(time.time()))
-        target_lang = LANG_MAP.get(payload.lang, "English") # Определяем язык для ответа
+        target_lang = LANG_MAP.get(payload.lang, "English")
         
-        # Обновленный промпт, который учитывает язык пользователя
         prompt = f"""
         User message: "{payload.message}"
         1. Extract the destination city in English.
@@ -67,24 +63,38 @@ async def handle_chat(payload: ChatPayload):
             try:
                 model = genai.GenerativeModel(m_name)
                 res = model.generate_content(prompt)
-                if res.text:
+                if res and res.text:
                     ai_response = res.text
                     used_model = m_name
                     break
-            except:
+            except Exception as e:
+                debug_log += f"[{m_name} error: {str(e)[:50]}] "
                 continue
 
-        # Парсинг ответа
-        clean_json = ai_response.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_json[clean_json.find('{'):clean_json.rfind('}')+1])
+        if not ai_response:
+            return JSONResponse(content={"reply": f"Все модели выдали ошибку. Последние логи: {debug_log}"})
+
+        # ПАРСИНГ JSON
+        try:
+            # Пытаемся найти границы JSON
+            start_idx = ai_response.find('{')
+            end_idx = ai_response.rfind('}') + 1
+            if start_idx == -1 or end_idx == 0:
+                raise ValueError("JSON not found in response")
+                
+            clean_json = ai_response[start_idx:end_idx]
+            data = json.loads(clean_json)
+        except Exception as e:
+            return JSONResponse(content={"reply": f"ИИ выдал странный ответ. Попробуйте еще раз. (Ошибка парсинга: {str(e)})"})
         
         detected_city = data.get("city", "none")
         ai_text = data.get("text", "Hello!")
 
-        if detected_city.lower() == "none":
-            return JSONResponse(content={"reply": "Please specify a city." if payload.lang == 'en' else "Уточните город, пожалуйста."})
+        if detected_city.lower() == "none" or len(detected_city) < 3:
+            msg = "Напишите, пожалуйста, город." if payload.lang == 'ru' else "Please specify a city."
+            return JSONResponse(content={"reply": msg})
 
-        # Ссылка Stay22 (включая защиту от Манчестера)
+        # ССЫЛКА
         city_encoded = urllib.parse.quote(detected_city)
         booking_url = f"https://www.booking.com/searchresults.html?ss={city_encoded}&lang={payload.lang}"
         
@@ -96,24 +106,23 @@ async def handle_chat(payload: ChatPayload):
         }
         stay22_link = f"https://www.stay22.com/allez/{STAY22_AID}?{urllib.parse.urlencode(params)}"
         
-        # Текст на кнопке тоже можно сделать мультиязычным
         btn_text = {
             'ru': f"🏨 Отели в {detected_city}",
             'en': f"🏨 Hotels in {detected_city}",
-            'de': f"🏨 Hotels в {detected_city}",
+            'de': f"🏨 Hotels in {detected_city}",
             'fr': f"🏨 Hôtels à {detected_city}",
             'es': f"🏨 Hoteles en {detected_city}"
         }.get(payload.lang, f"Hotels in {detected_city}")
 
         button_html = f"""
         <br><br>
-        <a href='{stay22_link}' target='_blank' style='display:inline-block; padding:14px 28px; background:#003580; color:white; text-decoration:none; border-radius:6px; font-weight:bold; font-family:Arial,sans-serif;'>
+        <a href='{stay22_link}' target='_blank' style='display:inline-block; padding:14px 28px; background:#003580; color:white; text-decoration:none; border-radius:6px; font-weight:bold;'>
            {btn_text}
         </a>
-        <br><small style='color:gray; font-size:9px;'>ID: {current_time[-4:]} | {used_model}</small>
+        <br><small style='color:gray; font-size:9px;'>Model: {used_model} | Key: {selected_key[:4]}***</small>
         """
         
         return JSONResponse(content={"reply": ai_text + button_html})
         
     except Exception as e:
-        return JSONResponse(content={"reply": "Service temporarily busy, please try again in 10 seconds."})
+        return JSONResponse(content={"reply": f"Ошибка системы: {str(e)}"})
