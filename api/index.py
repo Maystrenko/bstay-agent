@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-# Пытаемся импортировать новый SDK Gemini (2026)
+# Пытаемся импортировать SDK Gemini
 try:
     from google import genai
     SDK_AVAILABLE = True
@@ -19,7 +19,6 @@ except:
 
 app = FastAPI()
 
-# Настройка CORS для работы с твоим фронтендом
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,12 +27,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Переменные окружения из Vercel
+# Ключи из Vercel
 gemini_keys = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
 
-# Настройки API (версия из твоего скриншота)
+# Настройки для твоей версии API (booking-com18)
 RAPID_HOST = "booking-com18.p.rapidapi.com"
 STAY22_AID = "bstay24"
 LANG_MAP = {'ru': 'Russian', 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish'}
@@ -45,9 +44,9 @@ class ChatPayload(BaseModel):
     lang: str = "en"
 
 def get_hotels_safe(city_name, lang='ru'):
-    """Поиск отелей через booking-com18 на RapidAPI"""
+    """Поиск отелей через актуальные эндпоинты booking-com18"""
     if not RAPID_API_KEY: 
-        return None, "No RapidAPI Key"
+        return None, "No API Key"
         
     headers = {
         "X-RapidAPI-Key": RAPID_API_KEY,
@@ -55,34 +54,33 @@ def get_hotels_safe(city_name, lang='ru'):
     }
     
     try:
-        # 1. Поиск ID города (специфично для booking-com18)
-        loc_url = f"https://{RAPID_HOST}/hotels/search-destination"
+        # 1. Поиск ID города через stays/auto-complete (как на твоём скрине)
+        loc_url = f"https://{RAPID_HOST}/stays/auto-complete"
         loc_res = requests.get(loc_url, headers=headers, params={"query": city_name}, timeout=5)
         
         if loc_res.status_code != 200:
-            return None, f"Loc Err {loc_res.status_code}"
+            return None, f"Loc Error {loc_res.status_code}"
             
+        # В этой версии данные обычно в ключе ['data']
         loc_data = loc_res.json().get('data', [])
         if not loc_data:
             return None, "City not found"
         
-        dest_id = loc_data[0].get('dest_id')
-        search_type = loc_data[0].get('search_type')
+        # Берем ID из первого результата
+        dest_id = loc_data[0].get('id') 
 
-        # 2. Формируем даты (на 30 дней вперед)
-        arrival = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-        departure = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
+        # 2. Даты (на 30 дней вперед)
+        checkin = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        checkout = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
 
-        # 3. Поиск отелей (специфично для booking-com18)
-        search_url = f"https://{RAPID_HOST}/hotels/search-hotels"
+        # 3. Поиск отелей через stays/search (как на твоём скрине)
+        search_url = f"https://{RAPID_HOST}/stays/search"
         params = {
-            "dest_id": dest_id,
-            "search_type": search_type,
-            "arrival_date": arrival,
-            "departure_date": departure,
+            "id": dest_id,
+            "checkinDate": checkin,
+            "checkoutDate": checkout,
             "adults": "2",
-            "room_qty": "1",
-            "page_number": "1",
+            "rooms": "1",
             "units": "metric",
             "languagecode": lang,
             "currency_code": "USD"
@@ -91,11 +89,12 @@ def get_hotels_safe(city_name, lang='ru'):
         search_res = requests.get(search_url, headers=headers, params=params, timeout=10)
         
         if search_res.status_code != 200:
-            return None, f"Hotel Err {search_res.status_code}"
+            return None, f"Search Error {search_res.status_code}"
 
-        # Парсим список отелей
-        hotels_list = search_res.json().get('data', {}).get('hotels', [])
-        return hotels_list[:3], None
+        # Парсим список отелей (обычно в data -> hotels)
+        data = search_res.json().get('data', {})
+        hotels = data.get('hotels', []) or data.get('result', [])
+        return hotels[:3], None
         
     except Exception as e:
         return None, f"Sys: {str(e)[:20]}"
@@ -104,18 +103,12 @@ def get_hotels_safe(city_name, lang='ru'):
 async def handle_chat(payload: ChatPayload):
     try:
         target_lang = LANG_MAP.get(payload.lang, "Russian")
-        
-        # Промпт для ИИ
-        prompt = f"""
-        Extract city in English and write a 2-sentence cool greeting in {target_lang} for travel agent bstay24.
-        User: "{payload.message}"
-        Return ONLY JSON: {{"city": "CityName", "text": "Greeting text"}}
-        """
+        prompt = f"Extract city (English) and write 2-sentence cool greeting in {target_lang}. User: {payload.message}. Return JSON: {{\"city\": \"City\", \"text\": \"Greeting\"}}"
         
         ai_response = None
         engine = "None"
 
-        # 1. Пытаемся Groq (как самый стабильный по твоим скринам)
+        # 1. Пробуем Groq (самый стабильный)
         if groq_keys:
             try:
                 g_key = random.choice(groq_keys)
@@ -128,46 +121,32 @@ async def handle_chat(payload: ChatPayload):
                     }, timeout=10)
                 ai_response = r.json()['choices'][0]['message']['content']
                 engine = "Groq"
-            except:
-                pass
+            except: pass
 
-        # 2. Резерв: Gemini (если Groq упал)
-        if not ai_response and gemini_keys and SDK_AVAILABLE:
-            try:
-                client = genai.Client(api_key=random.choice(gemini_keys))
-                res = client.models.generate_content(model='gemini-2.0-flash-lite', contents=prompt)
-                ai_response = res.text
-                engine = "Gemini"
-            except:
-                pass
+        if not ai_response: return JSONResponse(content={"reply": "ИИ занят, попробуй еще раз."})
 
-        if not ai_response:
-            return JSONResponse(content={"reply": "ИИ временно недоступен. Попробуйте еще раз."})
-
-        # Парсинг ответа ИИ
         data = json.loads(ai_response[ai_response.find('{'):ai_response.rfind('}')+1])
         city = data.get("city", "none")
         greeting = data.get("text", "Город найден!")
 
-        # Поиск реальных отелей
+        # Поиск отелей
         hotels_html = ""
-        api_status = "Live Data"
+        api_status = "Live"
         
         if city.lower() != "none":
             hotels, err = get_hotels_safe(city, payload.lang)
             if hotels:
                 hotels_html = "<div style='margin-top:15px; display:flex; flex-direction:column; gap:12px;'>"
                 for h in hotels:
-                    # Поля в booking-com18 могут называться hotel_name или property_name
-                    name = h.get('property_name') or h.get('hotel_name', 'Hotel')
-                    # Цена может лежать в разных полях в зависимости от версии
-                    price_val = h.get('price_breakdown', {}).get('all_inclusive_ad_display_price', '0')
-                    price = int(float(price_val)) if price_val != '0' else "?"
+                    # Поля в booking-com18
+                    name = h.get('name') or h.get('hotel_name', 'Hotel')
+                    price_info = h.get('price', {}).get('displayPrice', '0')
+                    # Убираем лишние значки из цены если есть
+                    price = "".join(filter(str.isdigit, str(price_info))) or "0"
                     
-                    img = h.get('main_photo_url', '').replace('square60', 'square300')
+                    img = h.get('mainPhotoUrl') or h.get('main_photo_url', '')
                     
-                    # Партнерская ссылка Stay22
-                    h_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name)}&campaign=ai_card"
+                    h_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name)}"
                     
                     hotels_html += f"""
                     <div style='background:#fff; border:1px solid #eee; border-radius:12px; overflow:hidden; box-shadow:0 4px 12px rgba(0,0,0,0.1);'>
@@ -181,18 +160,16 @@ async def handle_chat(payload: ChatPayload):
                 hotels_html += "</div>"
             if err: api_status = err
 
-        # Финальные кнопки
         city_enc = urllib.parse.quote(city)
         main_url = f"https://www.stay22.com/allez/{STAY22_AID}?address={city_enc}&link=https://www.booking.com/searchresults.html?ss={city_enc}%26lang={payload.lang}"
+        btn_text = f"🏨 Все отели в {city}" if payload.lang == 'ru' else f"🏨 All hotels in {city}"
         
-        btn_text = f"🏨 Все отели в {city}" if payload.lang == 'ru' else f"🏨 View hotels in {city}"
-        
-        footer_html = f"""
+        footer = f"""
         <br><a href='{main_url}' target='_blank' style='display:inline-block; padding:15px; background:#003580; color:white; text-decoration:none; border-radius:8px; font-weight:bold; width:100%; text-align:center; box-sizing:border-box;'>{btn_text}</a>
         <br><small style='color:gray; font-size:9px;'>Engine: {engine} | API: {api_status}</small>
         """
 
-        return JSONResponse(content={"reply": greeting + hotels_html + footer_html})
+        return JSONResponse(content={"reply": greeting + hotels_html + footer})
 
     except Exception as e:
         return JSONResponse(content={"reply": f"Ошибка сервера: {str(e)}"})
