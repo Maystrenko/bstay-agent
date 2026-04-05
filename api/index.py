@@ -13,7 +13,7 @@ from pydantic import BaseModel
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# Конфигурация ключей
+# Ключи
 gemini_keys = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
@@ -29,7 +29,6 @@ class ChatPayload(BaseModel):
     lang: str = "en"
 
 def get_hotels_list(city_name, lang='ru'):
-    """Получение списка 10 отелей через RapidAPI"""
     if not RAPID_API_KEY: return None, "No API Key"
     headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": RAPID_HOST}
     try:
@@ -41,7 +40,7 @@ def get_hotels_list(city_name, lang='ru'):
         if not loc_list: return None, "City not found"
         dest_id = loc_list[0].get('id')
 
-        # 2. Даты (на 30 дней вперед)
+        # 2. Даты (30 дней вперед)
         in_d = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         out_d = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
 
@@ -53,13 +52,12 @@ def get_hotels_list(city_name, lang='ru'):
         res = requests.get(f"https://{RAPID_HOST}/stays/search", headers=headers, params=params, timeout=12)
         data = res.json()
         
-        # Парсим список отелей
         if isinstance(data, list): hotels = data
         else:
             d_block = data.get('data', {})
             hotels = d_block if isinstance(d_block, list) else (d_block.get('hotels', []) or d_block.get('results', []))
         
-        return hotels[:10], None # Возвращаем ровно 10
+        return hotels[:10], None
     except Exception as e:
         return None, f"Err: {str(e)[:15]}"
 
@@ -67,7 +65,7 @@ def get_hotels_list(city_name, lang='ru'):
 async def handle_chat(payload: ChatPayload):
     try:
         t_lang = LANG_MAP.get(payload.lang, "Russian")
-        prompt = f"Extract city (English) and write a short welcoming sentence in {t_lang} about it. User: {payload.message}. JSON ONLY: {{\"city\": \"City\", \"text\": \"Greeting\"}}"
+        prompt = f"Extract city (English) and write a short welcoming sentence in {t_lang}. User: {payload.message}. JSON ONLY: {{\"city\": \"City\", \"text\": \"Greeting\"}}"
         
         ai_res = None
         if groq_keys:
@@ -90,38 +88,31 @@ async def handle_chat(payload: ChatPayload):
         if city.lower() != "none":
             hotels, err = get_hotels_list(city, payload.lang)
             if hotels:
-                list_html = f"<div style='margin-top:15px; background:#f9f9f9; padding:15px; border-radius:10px; border:1px solid #eee;'>"
-                list_html += f"<h3 style='margin:0 0 10px 0; font-size:16px; color:#333;'>🌟 Top 10 Hotels in {city}:</h3>"
+                list_html = f"<div style='margin-top:15px; background:#fdfdfd; padding:15px; border-radius:12px; border:1px solid #ddd;'>"
+                list_html += f"<h3 style='margin:0 0 12px 0; font-size:16px; color:#003580;'>🌟 Top 10 Hotels in {city}:</h3>"
                 
                 for i, h in enumerate(hotels, 1):
                     name = h.get('name') or h.get('hotel_name') or "Hotel"
-                    # Чистим цену
-                    p_val = "0"
-                    p_obj = h.get('price', {})
-                    if isinstance(p_obj, dict):
-                        gross = p_obj.get('amountPerStay', {}).get('grossAmount', {})
-                        p_val = gross.get('amount') or gross.get('value') if isinstance(gross, dict) else p_obj.get('displayPrice', '0')
                     
-                    price = "".join(filter(str.isdigit, str(p_val or h.get('minPrice', '0'))))
-                    price_txt = f" — <b>${price}</b>" if price and price != "0" else ""
-                    
-                    # Ссылка Stay22 (Отель + Город)
-                    link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name + ', ' + city)}&campaign=top10_list"
+                    # Прямая ссылка Stay22 через поиск (самый надежный метод)
+                    # Формат: Название + Город
+                    search_query = urllib.parse.quote(f"{name} {city}")
+                    link = f"https://www.stay22.com/allez/{STAY22_AID}?campaign=top10&address={search_query}"
                     
                     list_html += f"""
-                    <div style='margin-bottom:12px; padding-bottom:8px; border-bottom:1px solid #e0e0e0; display:flex; justify-content:space-between; align-items:center;'>
-                        <span style='font-size:14px; color:#333;'>{i}. <b>{name}</b>{price_txt}</span>
-                        <a href='{link}' target='_blank' style='background:#007BFF; color:white; text-decoration:none; padding:5px 12px; border-radius:5px; font-size:12px; font-weight:bold; flex-shrink:0; margin-left:10px;'>Book</a>
+                    <div style='margin-bottom:10px; padding-bottom:8px; border-bottom:1px solid #eee; display:flex; justify-content:space-between; align-items:center;'>
+                        <span style='font-size:14px; color:#333;'>{i}. <b>{name}</b></span>
+                        <a href='{link}' target='_blank' style='background:#003580; color:white; text-decoration:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:bold;'>Book</a>
                     </div>"""
                 list_html += "</div>"
 
-        # Финальная кнопка на Booking
+        # Кнопка общего поиска
         city_enc = urllib.parse.quote(city)
-        main_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={city_enc}&link=https://www.booking.com/searchresults.html?ss={city_enc}"
-        btn_text = f"🏨 View All Hotels in {city}" if payload.lang == 'en' else f"🏨 Все отели в г. {city}"
+        main_link = f"https://www.stay22.com/allez/{STAY22_AID}?campaign=main_button&address={city_enc}"
+        btn_text = f"🏨 Посмотреть все отели в {city}"
         
         footer = f"""
-        <br><a href='{main_link}' target='_blank' style='display:inline-block; padding:15px; background:#003580; color:white; text-decoration:none; border-radius:8px; font-weight:bold; width:100%; text-align:center; box-sizing:border-box;'>{btn_text}</a>
+        <br><a href='{main_link}' target='_blank' style='display:inline-block; padding:16px; background:#007BFF; color:white; text-decoration:none; border-radius:10px; font-weight:bold; width:100%; text-align:center; box-sizing:border-box;'>{btn_text}</a>
         """
 
         return JSONResponse(content={"reply": greeting + list_html + footer})
