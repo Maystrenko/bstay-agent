@@ -23,7 +23,7 @@ GEMINI_API_KEY = "AIzaSyA9A_2iWX83RstoFllyI_3K1FNJY6hoDhs"
 STAY22_AID = "bstay24"
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-pro')
 
 class ChatPayload(BaseModel):
     user_id: str
