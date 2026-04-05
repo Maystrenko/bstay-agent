@@ -26,7 +26,7 @@ else:
     print("ВНИМАНИЕ: Ключ GEMINI_API_KEY не найден в Vercel!")
 
 # Модель 1.5-flash — самая стабильная для бесплатных аккаунтов (1500/день)
-model = genai.GenerativeModel('gemini-2.0-flash')
+model = genai.GenerativeModel('gemini-flash-latest')
 
 class ChatPayload(BaseModel):
     user_id: str
