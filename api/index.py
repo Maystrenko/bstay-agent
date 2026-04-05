@@ -29,24 +29,24 @@ class ChatPayload(BaseModel):
     lang: str = "en"
 
 def get_hotels_data(city_name, lang='ru'):
-    """Получение 10 отелей для последующей обработки ИИ"""
+    """Получение 10 отелей с их ID для точных ссылок"""
     if not RAPID_API_KEY: return None, "No API Key"
     headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": RAPID_HOST}
     try:
+        # 1. Поиск локации
         loc_res = requests.get(f"https://{RAPID_HOST}/stays/auto-complete", headers=headers, params={"query": city_name}, timeout=6)
-        loc_json = loc_res.json()
-        loc_list = loc_json if isinstance(loc_json, list) else loc_json.get('data', [])
+        loc_list = loc_res.json() if isinstance(loc_res.json(), list) else loc_res.json().get('data', [])
         if not loc_list: return None, "City not found"
         dest_id = loc_list[0].get('id')
 
+        # 2. Поиск отелей
         in_d = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         out_d = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
-
-        params = {"locationId": dest_id, "checkinDate": in_d, "checkoutDate": out_d, "adults": "2", "rooms": "1", "units": "metric", "languagecode": lang, "currency_code": "USD"}
+        params = {"locationId": dest_id, "checkinDate": in_d, "checkoutDate": out_d, "adults": "2", "rooms": "1", "currency_code": "USD"}
+        
         res = requests.get(f"https://{RAPID_HOST}/stays/search", headers=headers, params=params, timeout=12)
         data = res.json()
         
-        hotels = []
         if isinstance(data, list): hotels = data
         else:
             d_block = data.get('data', {})
@@ -61,41 +61,42 @@ async def handle_chat(payload: ChatPayload):
     try:
         t_lang = LANG_MAP.get(payload.lang, "Russian")
         
-        # 1. Сначала узнаем город
-        city_prompt = f"Extract only city name in English from: '{payload.message}'. Return JSON: {{\"city\": \"City\"}}"
-        ai_city_res = requests.post("https://api.groq.com/openai/v1/chat/completions", 
+        # 1. Извлекаем город
+        city_prompt = f"Extract only city name in English from: '{payload.message}'. Return JSON: {{\"city\": \"CityName\"}}"
+        g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", 
             headers={"Authorization": f"Bearer {random.choice(groq_keys)}"}, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": city_prompt}], "response_format": {"type": "json_object"}}, timeout=10).json()
-        
-        city = ai_city_res['choices'][0]['message']['content']
-        city_name = json.loads(city).get("city", "none")
+        city_name = json.loads(g_res['choices'][0]['message']['content']).get("city", "none")
 
         if city_name.lower() == "none":
-            return JSONResponse(content={"reply": "Пожалуйста, укажите город, чтобы я мог составить гид по отелям."})
+            return JSONResponse(content={"reply": "Пожалуйста, напишите название города, чтобы я подготовил гид."})
 
-        # 2. Получаем реальные отели
-        hotels, err = get_hotels_data(city_name, payload.lang)
+        # 2. Получаем отели из API
+        hotels, err = get_hotels_safe = get_hotels_data(city_name, payload.lang)
         if not hotels:
             return JSONResponse(content={"reply": f"Не удалось найти отели в {city_name}. Попробуйте другой город."})
 
-        # Готовим список отелей для ИИ
-        hotels_names = [h.get('name') or h.get('hotel_name') or "Hotel" for h in hotels]
-        
-        # 3. Просим ИИ составить расширенный гид
+        # Создаем словарь для ИИ, чтобы он мог сопоставить ID и Название
+        hotels_map = []
+        for h in hotels:
+            # Важно: достаем hotel_id для прямой ссылки
+            h_id = h.get('hotel_id') or h.get('id')
+            h_name = h.get('name') or h.get('hotel_name', 'Hotel')
+            hotels_map.append({"id": h_id, "name": h_name})
+
+        # 3. Генерируем расширенный ответ через ИИ
         guide_prompt = f"""
-        Based on this list of real hotels in {city_name}: {hotels_names}.
-        Create a detailed travel guide in {t_lang}.
-        Categorize them into 3 sections: 'Luxury', 'Boutique/Modern', and 'Budget/Convenience'.
-        For each section, pick relevant hotels from the list.
-        Write 1-2 descriptive sentences for each hotel.
-        Include a 'Travel Tips' section at the end for {city_name}.
-        Return JSON structure: 
+        Create a detailed travel guide for {city_name} in {t_lang}.
+        Categorize these hotels into 'Luxury', 'Modern/Boutique', and 'Budget': {json.dumps([h['name'] for h in hotels_map])}.
+        For each category, list 2-3 hotels with 1-2 sentences of description.
+        Add 'Travel Tips' at the end.
+        Return ONLY JSON: 
         {{
-          "intro": "General intro about city hotels",
+          "intro": "Intro text",
           "categories": [
-            {{ "name": "Category Name", "hotels": [ {{ "name": "Hotel Name", "desc": "Description" }} ] }}
+            {{ "name": "Category", "hotels": [ {{ "name": "Hotel Name", "desc": "Short description" }} ] }}
           ],
-          "tips": "3 travel tips for this city"
+          "tips": "Tips text"
         }}
         """
         
@@ -103,37 +104,49 @@ async def handle_chat(payload: ChatPayload):
             headers={"Authorization": f"Bearer {random.choice(groq_keys)}"}, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": guide_prompt}], "response_format": {"type": "json_object"}}, timeout=15).json()
         
-        guide_data = json.loads(guide_res['choices'][0]['message']['content'])
+        g_data = json.loads(guide_res['choices'][0]['message']['content'])
 
-        # 4. Собираем HTML
-        full_html = f"<div style='font-family: sans-serif; line-height: 1.5; color: #333;'>"
-        full_html += f"<p style='margin-bottom: 20px;'>{guide_data.get('intro')}</p>"
+        # 4. Собираем HTML с ТОЧНЫМИ ссылками
+        html = f"<div style='line-height: 1.6; color: #333;'>"
+        html += f"<p>{g_data.get('intro')}</p>"
 
-        for cat in guide_data.get('categories', []):
-            full_html += f"<h3 style='color: #003580; border-bottom: 2px solid #003580; padding-bottom: 5px; margin-top: 25px;'>{cat['name']}</h3>"
+        # Создаем быстрый поиск ID по имени для сборки ссылок
+        id_lookup = {h['name']: h['id'] for h in hotels_map}
+
+        for cat in g_data.get('categories', []):
+            html += f"<h3 style='color: #003580; margin-top: 20px; border-bottom: 1px solid #eee;'>{cat['name']}</h3>"
             for h_info in cat.get('hotels', []):
-                h_name = h_info['name']
-                h_desc = h_info['desc']
-                # Формируем ссылку Stay22
-                link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(h_name + ', ' + city_name)}&campaign=expanded_guide"
-                
-                full_html += f"""
-                <div style='margin-bottom: 15px; padding: 10px; background: #f9f9f9; border-radius: 8px;'>
-                    <div style='display: flex; justify-content: space-between; align-items: flex-start;'>
-                        <span style='font-weight: bold; font-size: 15px;'>{h_name}</span>
-                        <a href='{link}' target='_blank' style='background: #007BFF; color: white; text-decoration: none; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: bold;'>Book</a>
+                name = h_info['name']
+                desc = h_info['desc']
+                h_id = id_lookup.get(name)
+
+                # ФОРМИРУЕМ ТОЧНУЮ ССЫЛКУ
+                if h_id:
+                    # Прямая ссылка на конкретный отель на Booking
+                    booking_url = f"https://www.booking.com/hotel/id/{h_id}.html"
+                    # Оборачиваем в Stay22 Allez
+                    final_link = f"https://www.stay22.com/allez/{STAY22_AID}?link={urllib.parse.quote(booking_url)}&campaign=exact_match"
+                else:
+                    # Запасной вариант: поиск по названию
+                    final_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(name + ' ' + city_name)}"
+
+                html += f"""
+                <div style='margin-bottom: 15px; padding: 12px; background: #fcfcfc; border-radius: 10px; border-left: 4px solid #007BFF;'>
+                    <div style='display: flex; justify-content: space-between; align-items: center;'>
+                        <strong style='font-size: 15px;'>{name}</strong>
+                        <a href='{final_link}' target='_blank' style='background: #007BFF; color: white; text-decoration: none; padding: 5px 15px; border-radius: 6px; font-weight: bold; font-size: 12px;'>Book Now</a>
                     </div>
-                    <p style='font-size: 13px; color: #666; margin: 5px 0 0 0;'>{h_desc}</p>
+                    <p style='font-size: 13px; color: #555; margin: 5px 0 0 0;'>{desc}</p>
                 </div>"""
 
-        full_html += f"<h3 style='color: #28a745; margin-top: 25px;'>📍 Советы по поездке:</h3>"
-        full_html += f"<p style='font-size: 13px; font-style: italic; background: #e9f7ef; padding: 10px; border-radius: 8px;'>{guide_data.get('tips')}</p>"
+        html += f"<div style='background: #e9f7ef; padding: 15px; border-radius: 10px; margin-top: 20px;'><strong>💡 Советы:</strong><br><small>{g_data.get('tips')}</small></div>"
         
+        # Общая кнопка
         city_enc = urllib.parse.quote(city_name)
-        main_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={city_enc}&link=https://www.booking.com/searchresults.html?ss={city_enc}"
-        full_html += f"<br><a href='{main_link}' target='_blank' style='display: block; text-align: center; padding: 15px; background: #003580; color: white; text-decoration: none; border-radius: 10px; font-weight: bold;'>Смотреть все варианты в {city_name}</a></div>"
+        all_url = f"https://www.stay22.com/allez/{STAY22_AID}?address={city_enc}"
+        html += f"<br><a href='{all_url}' target='_blank' style='display: block; text-align: center; padding: 15px; background: #003580; color: white; text-decoration: none; border-radius: 10px; font-weight: bold;'>Смотреть все отели в {city_name}</a></div>"
 
-        return JSONResponse(content={"reply": full_html})
+        return JSONResponse(content={"reply": html})
 
     except Exception as e:
-        return JSONResponse(content={"reply": f"Ошибка при создании гида: {str(e)}"})
+        return JSONResponse(content={"reply": f"Ошибка: {str(e)}"})
