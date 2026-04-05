@@ -23,8 +23,8 @@ STAY22_AID = "bstay24"
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Приоритет на модели с лимитом 1500 запросов
-MODELS_TO_TRY = ["gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-2.0-flash-lite", "gemini-flash-latest"]
+# Ставим 1.5-flash-8b на первое место - у неё лимит 1500 запросов в день!
+MODELS_TO_TRY = ["gemini-1.5-flash-8b", "gemini-1.5-flash", "gemini-flash-latest"]
 
 class ChatPayload(BaseModel):
     user_id: str
@@ -34,49 +34,60 @@ class ChatPayload(BaseModel):
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
     try:
+        # Если ключа нет, сразу выходим
+        if not GEMINI_API_KEY:
+            return JSONResponse(content={"reply": "Ошибка: Не настроен API KEY в Vercel"})
+
         current_time = str(int(time.time()))
         
-        # ЭКОНОМИЯ КВОТЫ: Просим всё за ОДИН запрос
+        # 1 запрос для всего
         prompt = f"""
-        Analyze this user message: "{payload.message}"
-        1. Extract the destination city in English.
-        2. Write a 2-sentence friendly greeting in Russian about this city.
-        Return ONLY a JSON object: {{"city": "CityName", "text": "Russian text"}}. 
-        If no city found, set city to "none".
+        User said: "{payload.message}"
+        1. Extract destination city in English.
+        2. Write 2-sentence friendly greeting in Russian about this city.
+        Return ONLY JSON: {{"city": "CityName", "text": "Russian text"}}
         """
         
-        # Перебор моделей для надежности
         ai_response = ""
         used_model = ""
+        
+        # Пытаемся получить ответ
         for m_name in MODELS_TO_TRY:
             try:
                 model = genai.GenerativeModel(m_name)
                 res = model.generate_content(prompt)
-                ai_response = res.text
-                used_model = m_name
-                break
+                if res and res.text:
+                    ai_response = res.text
+                    used_model = m_name
+                    break
             except Exception as e:
-                if "404" in str(e): continue
-                else: raise e
+                if "429" in str(e):
+                    return JSONResponse(content={"reply": "Google лимит (429). Подождите 1-2 минуты или смените API ключ в Vercel."})
+                continue
 
-        # Чистим JSON от мусора
-        clean_json = ai_response.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_json[clean_json.find('{'):clean_json.rfind('}')+1])
+        if not ai_response:
+            return JSONResponse(content={"reply": "ИИ временно недоступен. Попробуйте через минуту."})
+
+        # Парсим JSON
+        try:
+            clean_json = ai_response.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_json[clean_json.find('{'):clean_json.rfind('}')+1])
+        except:
+            # Если ИИ выдал не JSON, пробуем спасти ситуацию
+            return JSONResponse(content={"reply": "Не удалось распознать город. Напишите еще раз, например: 'Лондон'"})
         
         detected_city = data.get("city", "none")
-        ai_text = data.get("text", "Привет! Назовите город?")
+        ai_text = data.get("text", "Я нашел отличные варианты!")
 
-        if detected_city.lower() == "none" or len(detected_city) < 3:
-            return JSONResponse(content={"reply": ai_text})
+        if detected_city.lower() == "none":
+            return JSONResponse(content={"reply": "В какой город вы хотите поехать?"})
 
-        # Ссылка с защитой от Манчестера
-        city_encoded = urllib.parse.quote(detected_city)
-        booking_url = f"https://www.booking.com/searchresults.html?ss={city_encoded}&lang=ru"
-        
+        # Формируем ссылку (address= поможет избежать Манчестера)
+        booking_url = f"https://www.booking.com/searchresults.html?ss={urllib.parse.quote(detected_city)}&lang=ru"
         params = {
-            "campaign": "ai_bot",
+            "campaign": "ai_search",
             "link": booking_url,
-            "address": detected_city, # ПРИНУДИТЕЛЬНО ПЕРЕБИВАЕМ МАНЧЕСТЕР
+            "address": detected_city,
             "t": current_time
         }
         stay22_link = f"https://www.stay22.com/allez/{STAY22_AID}?{urllib.parse.urlencode(params)}"
@@ -86,15 +97,10 @@ async def handle_chat(payload: ChatPayload):
         <a href='{stay22_link}' target='_blank' style='display:inline-block; padding:14px 28px; background:#003580; color:white; text-decoration:none; border-radius:4px; font-weight:bold;'>
            🏨 Отели в {detected_city}
         </a>
-        <br><small style='color:gray; font-size:9px;'>ID: {current_time[-4:]} | Model: {used_model}</small>
+        <br><small style='color:gray; font-size:9px;'>Model: {used_model}</small>
         """
         
-        return JSONResponse(
-            content={"reply": ai_text + button_html},
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
-        )
+        return JSONResponse(content={"reply": ai_text + button_html})
         
     except Exception as e:
-        if "429" in str(e):
-            return JSONResponse(content={"reply": "Google Free Tier лимит. Подождите 30 сек."})
         return JSONResponse(content={"reply": f"Ошибка: {str(e)}"})
