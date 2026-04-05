@@ -27,6 +27,20 @@ class ChatPayload(BaseModel):
     lang: str = "en"
     chat_history: list = []
 
+def clean_city_name(text):
+    """Удаляет лишние слова из короткого запроса, оставляя только город"""
+    # Список слов, которые нужно вырезать
+    stop_words = [
+        "отели", "отель", "гостиницы", "гостиница", "hotels", "hotel", 
+        "дешевые", "cheap", "найти", "find", "в", "in", "хочу", "want"
+    ]
+    # Убираем пунктуацию и приводим к нижнему регистру
+    text = re.sub(r'[^\w\s]', '', text.lower()).strip()
+    # Убираем стоп-слова
+    words = text.split()
+    clean_words = [w for w in words if w not in stop_words]
+    return " ".join(clean_words).strip()
+
 def get_hotels_data(city_name):
     try:
         headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": RAPID_HOST}
@@ -48,7 +62,6 @@ def get_hotels_data(city_name):
         raw = h_json.get('data', [])
         if not isinstance(raw, list): raw = h_json.get('data', {}).get('hotels', []) or h_json.get('data', {}).get('results', [])
         
-        if not raw: return None
         return [{"id": str(h.get('hotel_id') or h.get('id')), "name": h.get('name') or h.get('hotel_name')} for h in raw if (h.get('id') or h.get('hotel_id'))][:10]
     except Exception: return None
 
@@ -62,14 +75,15 @@ async def handle_chat(payload: ChatPayload):
         g_key = random.choice(groq_keys)
         headers = {"Authorization": f"Bearer {g_key}"}
 
-        # --- ШАГ 1: ВЫТАСКИВАЕМ ГОРОД (БЕЗ ИСТОРИИ, ЧТОБЫ НЕ ПУТАТЬСЯ) ---
-        # Если сообщение короткое (1-2 слова), сразу пробуем его
-        words = msg.split()
-        if len(words) <= 2:
-            potential_city = re.sub(r'[^\w\s]', '', msg) # Убираем точки/запятые
+        # --- ШАГ 1: ВЫТАСКИВАЕМ ГОРОД ---
+        words_count = len(msg.split())
+        
+        if words_count <= 3:
+            # Если фраза короткая, чистим её от слов "отели", "дешевые" и т.д.
+            potential_city = clean_city_name(msg)
         else:
-            # Для длинных фраз просим ИИ найти город и перевести в English Nominative
-            c_sys = "Extract the city name from user message and return it in English Nominative case. JSON ONLY: {'c': 'London'}. If no city, 'none'."
+            # Для длинных фраз используем ИИ
+            c_sys = "Extract the city name and return it in English Nominative. JSON ONLY: {'c': 'Kyiv'}. If no city, 'none'."
             c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                 json={
                     "model": "llama-3.3-70b-versatile", 
@@ -78,8 +92,8 @@ async def handle_chat(payload: ChatPayload):
                 }, timeout=8)
             potential_city = json.loads(c_res.json()['choices'][0]['message']['content']).get("c", "none")
 
-        if potential_city.lower() == "none":
-            err = "Please tell me the city name." if user_lang == "en" else "Пожалуйста, напишите название города."
+        if not potential_city or potential_city.lower() == "none":
+            err = "Please specify the city." if user_lang == "en" else "Пожалуйста, укажите город."
             return JSONResponse(content={"reply": err})
 
         # --- ШАГ 2: КЭШ ---
@@ -90,21 +104,19 @@ async def handle_chat(payload: ChatPayload):
         # --- ШАГ 3: API BOOKING ---
         hotels = get_hotels_data(potential_city)
         if not hotels:
-            err_api = f"Sorry, I couldn't find hotels in {potential_city}." if user_lang == "en" else f"Отели в {potential_city} не найдены."
+            err_api = f"No hotels found in {potential_city}." if user_lang == "en" else f"Отели в {potential_city} не найдены."
             return JSONResponse(content={"reply": err_api})
 
-        # --- ШАГ 4: ГЕНЕРАЦИЯ ГИДА (МУЛЬТИЯЗЫК) ---
+        # --- ШАГ 4: ГИД ---
         lang_name = "Russian" if user_lang == "ru" else "English"
-        g_prompt = f"Create a stylish Top-3 hotel guide for {potential_city} in {lang_name}. Use: {json.dumps(hotels)}. JSON: {{'i': 'intro', 'cats': [ {{'n': 'cat_name', 'h': {{'id': 'id', 'n': 'name', 'd': 'desc'}} }} ], 't': 'tips'}}"
+        g_prompt = f"Create a Top-3 hotel guide for {potential_city} in {lang_name}. Use: {json.dumps(hotels)}. JSON: {{'i': 'intro', 'cats': [ {{'n': 'category', 'h': {{'id': 'id', 'n': 'name', 'd': 'desc'}} }} ], 't': 'tips'}}"
         
         g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=12)
         g = json.loads(g_res.json()['choices'][0]['message']['content'])
 
-        # --- ШАГ 5: ФОРМИРУЕМ HTML ---
+        # --- ШАГ 5: HTML ---
         btn = "Book" if user_lang == "en" else "Забронировать"
-        tip_title = "Tip:" if user_lang == "en" else "Совет:"
-        
         html = f"<div style='font-family: sans-serif;'><p>{g['i']}</p>"
         for cat in g['cats']:
             h = cat['h']
@@ -112,7 +124,7 @@ async def handle_chat(payload: ChatPayload):
             html += f"""
             <div style='margin-top: 15px;'>
                 <span style='background:#003580; color:#fff; padding:3px 10px; border-radius:20px; font-size:10px; font-weight:bold;'>{cat['n']}</span>
-                <div style='margin-top:8px; padding:12px; background:#fff; border-radius:10px; border:1px solid #eee; box-shadow:0 3px 8px rgba(0,0,0,0.03);'>
+                <div style='margin-top:8px; padding:12px; background:#fff; border-radius:12px; border:1px solid #eee; box-shadow:0 3px 8px rgba(0,0,0,0.03);'>
                     <div style='display:flex; justify-content:space-between; align-items:center;'>
                         <b style='font-size:14px;'>{h['n']}</b>
                         <a href='{link}' target='_blank' style='background:#007BFF; color:#fff; text-decoration:none; padding:6px 12px; border-radius:6px; font-weight:bold; font-size:11px;'>{btn}</a>
@@ -121,8 +133,6 @@ async def handle_chat(payload: ChatPayload):
                 </div>
             </div>"""
         
-        html += f"<div style='background:#f4f9ff; padding:10px; border-radius:8px; margin-top:20px; font-size:12px;'><b>{tip_title}</b> {g['t']}</div>"
-        
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(potential_city)}"
         html += f"<br><a href='{all_link}' target='_blank' style='display:block; text-align:center; padding:14px; background:#003580; color:#fff; text-decoration:none; border-radius:10px; font-weight:bold; font-size:13px;'>View all in {potential_city} →</a></div>"
 
@@ -130,4 +140,4 @@ async def handle_chat(payload: ChatPayload):
         return JSONResponse(content={"reply": html})
 
     except Exception:
-        return JSONResponse(content={"reply": "Error. Try again later." if user_lang == "en" else "Ошибка. Попробуйте позже."})
+        return JSONResponse(content={"reply": "Error. Try again later."})
