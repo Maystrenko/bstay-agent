@@ -13,7 +13,7 @@ from pydantic import BaseModel
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# Ключи из Vercel
+# Ключи
 gemini_keys = [k.strip() for k in os.environ.get("GEMINI_API_KEY", "").split(",") if k.strip()]
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
@@ -33,27 +33,34 @@ def get_hotels_safe(city_name, lang='ru'):
     headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": RAPID_HOST}
     
     try:
-        # 1. Получаем ID города (stays/auto-complete)
+        # 1. Поиск локации (stays/auto-complete)
         loc_res = requests.get(f"https://{RAPID_HOST}/stays/auto-complete", 
                                headers=headers, params={"query": city_name}, timeout=6)
         
         if loc_res.status_code != 200:
-            return None, f"Loc Error {loc_res.status_code}"
+            return None, f"Loc Http {loc_res.status_code}"
             
-        loc_data = loc_res.json().get('data', [])
-        if not loc_data: return None, "City not in DB"
+        raw_loc = loc_res.json()
         
-        # ID из автокомплита
+        # Исправляем ошибку 'list' object has no attribute 'get'
+        if isinstance(raw_loc, list):
+            loc_data = raw_loc
+        else:
+            loc_data = raw_loc.get('data', [])
+
+        if not loc_data: return None, "City not found"
+        
+        # Берем ID первого результата
         dest_id = loc_data[0].get('id')
-        if not dest_id: return None, "No ID found"
+        if not dest_id: return None, "No ID in loc"
 
         # 2. Даты
         checkin = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
         checkout = (datetime.now() + timedelta(days=33)).strftime('%Y-%m-%d')
 
-        # 3. ПОИСК ОТЕЛЕЙ (ИСПРАВЛЕНО: locationId вместо id)
+        # 3. Поиск отелей (stays/search)
         search_params = {
-            "locationId": dest_id, # Исправлено под твою ошибку!
+            "locationId": dest_id,
             "checkinDate": checkin,
             "checkoutDate": checkout,
             "adults": "2",
@@ -66,31 +73,40 @@ def get_hotels_safe(city_name, lang='ru'):
         search_res = requests.get(f"https://{RAPID_HOST}/stays/search", 
                                   headers=headers, params=search_params, timeout=10)
         
-        search_json = search_res.json()
+        if search_res.status_code != 200:
+            return None, f"Search Http {search_res.status_code}"
+
+        search_data = search_res.json()
         
-        # Если API вернуло ошибку в JSON (как у тебя на скрине)
-        if not search_json.get('status', True) or search_json.get('data') is None:
-            err_detail = str(search_json.get('errors', 'Empty data'))
-            return None, f"API Logic: {err_detail[:30]}"
-            
-        hotels = search_json['data'].get('hotels', []) or search_json['data'].get('results', [])
-        if not hotels: return None, "No hotels now"
+        # Защита от пустых данных
+        hotels = []
+        if isinstance(search_data, list):
+            hotels = search_data
+        elif isinstance(search_data, dict):
+            # В разных версиях API отели могут быть в разных ключах
+            data_block = search_data.get('data', {})
+            if isinstance(data_block, list):
+                hotels = data_block
+            else:
+                hotels = data_block.get('hotels', []) or data_block.get('results', [])
+
+        if not hotels: return None, "No hotels found"
             
         return hotels[:3], None
         
     except Exception as e:
-        return None, f"Sys: {str(e)[:15]}"
+        # Теперь мы увидим точную ошибку, если она случится
+        return None, f"Err: {str(e)[:20]}"
 
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
     try:
         t_lang = LANG_MAP.get(payload.lang, "Russian")
-        prompt = f"Extract city (English) and write 2-sentence cool greeting in {t_lang}. User: {payload.message}. Return JSON: {{\"city\": \"City\", \"text\": \"Greeting\"}}"
+        prompt = f"Extract city (English) and write 2-sentence greeting in {t_lang}. User: {payload.message}. Return JSON: {{\"city\": \"City\", \"text\": \"Greeting\"}}"
         
         ai_res = None
         engine = "None"
 
-        # Пробуем Groq (работает стабильно)
         if groq_keys:
             try:
                 g_key = random.choice(groq_keys)
@@ -104,10 +120,9 @@ async def handle_chat(payload: ChatPayload):
 
         if not ai_res: return JSONResponse(content={"reply": "AI error."})
 
-        # Парсинг ответа
         data = json.loads(ai_res[ai_res.find('{'):ai_res.rfind('}')+1])
         city = data.get("city", "none")
-        greeting = data.get("text", "Нашел!")
+        greeting = data.get("text", "Готово!")
 
         hotels_html = ""
         api_info = "Live"
@@ -118,10 +133,12 @@ async def handle_chat(payload: ChatPayload):
                 hotels_html = "<div style='margin-top:15px; display:flex; flex-direction:column; gap:10px;'>"
                 for h in hotels:
                     name = h.get('name') or h.get('hotel_name', 'Hotel')
-                    # Умный поиск цены
-                    price_val = "0"
-                    if h.get('price'):
-                        price_val = h['price'].get('displayPrice') or h['price'].get('amount') or "0"
+                    
+                    # Безопасное извлечение цены
+                    price_val = "?"
+                    p_obj = h.get('price', {})
+                    if isinstance(p_obj, dict):
+                        price_val = p_obj.get('displayPrice') or p_obj.get('amount') or "?"
                     
                     price = "".join(filter(str.isdigit, str(price_val))) or "?"
                     img = h.get('mainPhotoUrl') or h.get('main_photo_url', '')
@@ -149,4 +166,4 @@ async def handle_chat(payload: ChatPayload):
         return JSONResponse(content={"reply": greeting + hotels_html + footer})
 
     except Exception as e:
-        return JSONResponse(content={"reply": f"Ошибка: {str(e)}"})
+        return JSONResponse(content={"reply": f"System error: {str(e)}"})
