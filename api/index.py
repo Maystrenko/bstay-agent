@@ -70,7 +70,7 @@ async def handle_chat(payload: ChatPayload):
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
-        db_key = f"v7:booking:{city_en.lower()}:{intent}"
+        db_key = f"v16:booking:{city_en.lower()}:{intent}"
         lock_key = f"lock:{city_en.lower()}:{intent}"
 
         full_list = []
@@ -78,17 +78,21 @@ async def handle_chat(payload: ChatPayload):
             raw = redis_db.get(db_key)
             full_list = json.loads(raw) if raw else []
 
-        # Обновление раз в сутки с УЛУЧШЕННЫМ промптом для РЕАЛЬНЫХ советов
+        # Обновление раз в сутки с УЛУЧШЕННЫМ ЭКСПЕРТНЫМ СОВЕТОМ
         if redis_db and not redis_db.get(lock_key):
             existing_ids = [item['id'] for item in full_list]
             new_items = get_new_hotels(city_en, intent, existing_ids)
 
             if new_items:
+                # НОВАЯ ЛОГИКА ПРОМПТА: ЗАПРЕЩАЕМ ВОДУ
                 g_prompt = f"""
                 Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. 
-                В поле 'adv' дай ОДИН РЕАЛЬНО ПОЛЕЗНЫЙ совет для туриста в {city_en}. 
-                Пиши про конкретные лайфхаки: выгодные проездные, налоги в отелях, как обойти очереди 
-                или где найти лучшую локальную еду. Без общих фраз. 
+                В поле 'adv' дай ОДИН КОНКРЕТНЫЙ лайфхак для туриста в {city_en}.
+                ПРАВИЛА ДЛЯ 'adv':
+                1. ЗАПРЕЩЕНО писать про отели или жилье.
+                2. ЗАПРЕЩЕНО использовать фразы 'советуем рассмотреть', 'планируйте заранее'.
+                3. НУЖНО написать про: транспортные карты, как сэкономить на еде, налоги в чеках или бесплатные часы в музеях.
+                Будь краток и полезен.
                 JSON ONLY: {{'adv': 'текст совета', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}
                 """
                 g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
@@ -106,8 +110,10 @@ async def handle_chat(payload: ChatPayload):
 
         if not full_list: return JSONResponse(content={"reply": "Отели не найдены."})
 
-        to_show = full_list[:5]
-        hidden_count = len(full_list) - 5
+        # Отображаем 5 отелей
+        display_limit = 5
+        to_show = full_list[:display_limit]
+        hidden_count = len(full_list) - display_limit
 
         html = f"""
         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: #f5f5f5; padding: 20px 0;">
@@ -121,7 +127,7 @@ async def handle_chat(payload: ChatPayload):
             <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px;">
                 <div style="flex: 1; min-width: 280px;">
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                        <span style="background: #003580; color: #fff; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'Рекомендуем')}</span>
+                        <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'Рекомендуем')}</span>
                         <span style="color: #008009; font-size: 12px; font-weight: 700;">✓ Проверено</span>
                     </div>
                     <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h['n']}</div>
@@ -133,14 +139,12 @@ async def handle_chat(payload: ChatPayload):
             </div>
             """
         
-        # --- БЛОК СОВЕТА (СТИЛЬ image_99662b.png) ---
+        # Блок СОВЕТА (улучшенный)
         if to_show[0].get('advice'):
             html += f"""
             <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 20px 0; display: flex; align-items: center; gap: 15px;">
                 <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: bold;">i</div>
-                <div style="font-size: 14px; color: #003580; line-height: 1.5;">
-                    <b>💡 Совет эксперта по {city_en.capitalize()}:</b> {to_show[0]['advice']}
-                </div>
+                <div style="font-size: 14px; color: #003580; line-height: 1.5;"><b>💡 Совет эксперта по {city_en.capitalize()}:</b> {to_show[0]['advice']}</div>
             </div>"""
 
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
