@@ -30,7 +30,6 @@ class ChatPayload(BaseModel):
     message: str
 
 def get_new_hotels(city_en, intent, existing_ids):
-    """Ищет 3 новых отеля через API"""
     try:
         headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": "booking-com18.p.rapidapi.com"}
         l_res = requests.get("https://booking-com18.p.rapidapi.com/stays/auto-complete", 
@@ -65,7 +64,6 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     try:
-        # 1. Извлекаем чистый город
         p_city = f"Extract city name in English from: '{msg}'. Respond ONLY with city name."
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
@@ -73,20 +71,15 @@ async def handle_chat(payload: ChatPayload):
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
         db_key = f"v7:booking:{city_en.lower()}:{intent}"
-        lock_key = f"lock:{city_en.lower()}:{intent}" # Ключ-замок на 24 часа
+        lock_key = f"lock:{city_en.lower()}:{intent}"
 
-        # 2. Достаем накопленную базу
         full_list = []
         if redis_db:
             raw = redis_db.get(db_key)
             full_list = json.loads(raw) if raw else []
 
-        # 3. ЛОГИКА: Обновляем только если нет "замка" в базе
-        can_update = True
-        if redis_db and redis_db.get(lock_key):
-            can_update = False
-
-        if can_update:
+        # Обновление раз в сутки
+        if redis_db and not redis_db.get(lock_key):
             existing_ids = [item['id'] for item in full_list]
             new_items = get_new_hotels(city_en, intent, existing_ids)
 
@@ -99,59 +92,61 @@ async def handle_chat(payload: ChatPayload):
                 last_adv = new_data.get('adv', '')
                 for h in new_data['cats']:
                     h['advice'] = last_adv
-                    full_list.insert(0, h) # Новые сверху
+                    full_list.insert(0, h)
                 
                 if redis_db:
                     redis_db.set(db_key, json.dumps(full_list))
-                    # Ставим замок на 24 часа (86400 сек)
                     redis_db.set(lock_key, "1", ex=86400)
 
-        if not full_list:
-            return JSONResponse(content={"reply": "Отели не найдены."})
+        if not full_list: return JSONResponse(content={"reply": "Отели не найдены."})
 
-        # 4. Сборка HTML (Booking Style)
-        to_show = full_list[:10]
-        hidden_count = len(full_list) - 10
-        current_advice = to_show[0].get('advice', '')
+        # --- ЛОГИКА ОТОБРАЖЕНИЯ 5 ОТЕЛЕЙ ---
+        display_limit = 5
+        to_show = full_list[:display_limit]
+        hidden_count = len(full_list) - display_limit
 
         html = f"""
-        <div style="font-family: 'BlinkMacSystemFont', 'Segoe UI', sans-serif; width: 100%; color: #1a1a1a; background: #f5f5f5; padding: 20px 0;">
+        <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: #f5f5f5; padding: 20px 0;">
             <div style="max-width: 1000px; margin: 0 auto; padding: 0 15px;">
-                <h2 style="font-size: 24px; font-weight: 700; color: #003580; margin-bottom: 20px;">{city_en.capitalize()}: найдено {len(full_list)} вариантов</h2>
+                <h2 style="font-size: 22px; font-weight: 700; color: #003580; margin-bottom: 20px;">{city_en.capitalize()}: {len(full_list)} вариантов найдено</h2>
         """
         
         for h in to_show:
             link = f"https://www.stay22.com/allez/booking/{h['id']}?aid={STAY22_AID}"
             html += f"""
-            <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px;">
+            <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px;">
                 <div style="flex: 1; min-width: 280px;">
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                        <span style="background: #003580; color: #ffffff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'Рекомендуем')}</span>
+                        <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'Рекомендуем')}</span>
                         <span style="color: #008009; font-size: 12px; font-weight: 700;">✓ Проверено</span>
                     </div>
                     <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h['n']}</div>
                     <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h['d']}</div>
                 </div>
                 <div style="text-align: right; min-width: 150px;">
-                    <div style="font-size: 12px; color: #008009; font-weight: 700; margin-bottom: 10px;">Бесплатная отмена</div>
                     <a href="{link}" target="_blank" style="background: #006ce4; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 14px; font-weight: 600; display: inline-block;">Показать цены</a>
                 </div>
             </div>
             """
         
-        if current_advice:
+        if to_show[0].get('advice'):
             html += f"""
-            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 25px 0; display: flex; align-items: center; gap: 15px;">
-                <div style="background: #003580; border-radius: 50%; min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">i</div>
-                <div style="font-size: 14px; color: #003580;"><b>Совет туристам:</b> {current_advice}</div>
+            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 20px 0; display: flex; align-items: center; gap: 15px;">
+                <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: bold;">i</div>
+                <div style="font-size: 14px; color: #003580;"><b>Совет туристам:</b> {to_show[0]['advice']}</div>
             </div>"""
 
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
+        # Кнопка меняется в зависимости от того, есть ли скрытые отели в базе
         if hidden_count > 0:
-            html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; background: #fff; color: #006ce4; text-decoration: none; border: 1px solid #006ce4; border-radius: 4px; font-weight: 700;'>Загрузить ещё {hidden_count} вариантов →</a>"
+            btn_label = f"Показать ещё {hidden_count} отелей →"
+            btn_style = "background: #ffffff; color: #006ce4; border: 1px solid #006ce4;"
         else:
-            html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; background: #003580; color: #fff; text-decoration: none; border-radius: 4px; font-weight: 700;'>Найти все на карте</a>"
+            btn_label = "Найти все варианты на карте →"
+            btn_style = "background: #003580; color: #ffffff; border: none;"
 
+        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; text-decoration: none; border-radius: 4px; font-weight: 700; font-size: 15px; {btn_style}'>{btn_label}</a>"
+        
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
     except:
