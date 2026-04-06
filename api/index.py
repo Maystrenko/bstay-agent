@@ -29,9 +29,10 @@ STAY22_AID = "bstay24"
 class ChatPayload(BaseModel):
     message: str
 
-def get_flag(country_code):
-    """Превращает код страны (GB, RU и т.д.) в эмодзи флаг"""
-    if not country_code or len(country_code) != 2: return "📍"
+def get_flag_emoji(country_code):
+    """Превращает код страны 'GB' в 🇬🇧. Если кода нет, ставит 🌍"""
+    if not country_code or country_code == "UN" or len(country_code) != 2: 
+        return "🌍"
     return "".join(chr(127397 + ord(c)) for c in country_code.upper())
 
 def get_new_hotels(city_en, intent, existing_ids):
@@ -41,7 +42,7 @@ def get_new_hotels(city_en, intent, existing_ids):
                              headers=headers, params={"query": city_en}, timeout=10)
         loc_data = l_res.json()['data'][0]
         dest_id = loc_data['id']
-        country_code = loc_data.get('country', 'UN') # Код страны для флага
+        country_code = loc_data.get('country', 'UN')
         
         params = {
             "locationId": dest_id, 
@@ -77,7 +78,7 @@ async def handle_chat(payload: ChatPayload):
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
-        db_key = f"v8:booking:{city_en.lower()}:{intent}"
+        db_key = f"v11:booking:{city_en.lower()}:{intent}"
 
         full_list = []
         country_code = "UN"
@@ -110,45 +111,52 @@ async def handle_chat(payload: ChatPayload):
 
         to_show = full_list[:10]
         hidden_count = len(full_list) - 10
-        flag = get_flag(country_code)
+        flag = get_flag_emoji(country_code)
 
-        # Сборка HTML
+        # Сборка HTML (Нарядная версия Booking)
         html = f"""
         <style>
-            @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
-            .booking-container {{ animation: fadeIn 0.5s ease-out; width: 100%; font-family: sans-serif; color: #1a1a1a; }}
+            @keyframes slideUp {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+            .booking-wrap {{ animation: slideUp 0.4s ease-out; width: 100%; font-family: -apple-system, system-ui, sans-serif; }}
         </style>
-        <div class="booking-container">
+        <div class="booking-wrap">
             <div style="max-width: 1000px; margin: 0 auto; padding: 10px;">
-                <h2 style="font-size: 22px; color: #003580; display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
-                    <span style="font-size: 30px;">{flag}</span> {city_en.capitalize()}: {len(full_list)} вариантов
-                </h2>
+                <div style="min-height: 50px; display: flex; align-items: center; gap: 12px; margin-bottom: 15px;">
+                    <span style="font-size: 32px;">{flag}</span> 
+                    <h2 style="font-size: 24px; color: #003580; margin: 0; font-weight: 800;">{city_en.capitalize()}: {len(full_list)} вариантов</h2>
+                </div>
         """
         
         for h in to_show:
             link = f"https://www.stay22.com/allez/booking/{h['id']}?aid={STAY22_AID}"
             html += f"""
-            <div style="background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                <div style="flex: 1; min-width: 250px;">
-                    <div style="background: #003580; color: #fff; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px;">{h.get('cat', 'Отель')}</div>
-                    <div style="font-size: 18px; font-weight: bold; color: #006ce4; margin-bottom: 5px;">{h['n']}</div>
-                    <div style="font-size: 13px; color: #4a4a4a; line-height: 1.4;">{h['d']}</div>
+            <div style="background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
+                <div style="flex: 1; min-width: 260px;">
+                    <div style="background: #003580; color: #fff; font-size: 10px; font-weight: 900; padding: 3px 10px; border-radius: 4px; display: inline-block; margin-bottom: 8px; text-transform: uppercase;">{h.get('cat', 'Отель')}</div>
+                    <div style="font-size: 19px; font-weight: 800; color: #006ce4; margin-bottom: 5px;">{h['n']}</div>
+                    <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h['d']}</div>
                 </div>
-                <a href="{link}" target="_blank" style="background: #006ce4; color: #fff; text-decoration: none; padding: 12px 25px; border-radius: 4px; font-size: 14px; font-weight: bold; white-space: nowrap;">Показать цены</a>
+                <div style="text-align: right;">
+                   <div style="color: #008009; font-size: 12px; font-weight: 700; margin-bottom: 8px;">✓ Бесплатная отмена</div>
+                   <a href="{link}" target="_blank" style="background: #006ce4; color: #fff; text-decoration: none; padding: 12px 25px; border-radius: 4px; font-size: 14px; font-weight: bold; display: inline-block; box-shadow: 0 4px 0 #004c9e;">Забронировать</a>
+                </div>
             </div>
             """
         
-        if to_show[0].get('advice'):
+        # Совет эксперта
+        current_advice = to_show[0].get('advice')
+        if current_advice:
             html += f"""
-            <div style="background: #ebf3ff; border-radius: 8px; padding: 15px; border-left: 5px solid #003580; margin: 20px 0; font-size: 14px; color: #003580;">
-                <b style="display: block; margin-bottom: 4px;">💡 Совет эксперта:</b> {to_show[0]['advice']}
+            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 18px; margin: 20px 0; display: flex; gap: 15px; align-items: center;">
+                <div style="font-size: 24px;">💡</div>
+                <div style="font-size: 14px; color: #003580; line-height: 1.5;"><b>Совет туристам:</b> {current_advice}</div>
             </div>"""
 
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
-        btn_text = f"Загрузить ещё {hidden_count} вариантов →" if hidden_count > 0 else "Найти все на карте →"
-        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 15px; background: #003580; color: #fff; text-decoration: none; border-radius: 4px; font-weight: bold; margin-top: 10px;'>{btn_text}</a>"
+        btn_text = f"Показать ещё {hidden_count} отелей в {city_en.capitalize()} →" if hidden_count > 0 else "Смотреть всё на карте →"
+        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; background: #003580; color: #fff; text-decoration: none; border-radius: 4px; font-weight: 800; font-size: 15px; margin-top: 10px;'>{btn_text}</a>"
         
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
     except Exception as e:
-        return JSONResponse(content={"reply": "Попробуйте еще раз через минуту."})
+        return JSONResponse(content={"reply": "Попробуйте обновить страницу и отправить запрос снова."})
