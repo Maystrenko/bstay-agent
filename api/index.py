@@ -24,7 +24,7 @@ except Exception as e:
 
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
-STAY22_AID = "btr"
+STAY22_AID = "btr" # Твой партнерский тег!
 
 class ChatPayload(BaseModel):
     message: str
@@ -64,39 +64,40 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     try:
-        # Умный поиск города (с защитой от стран и слова None)
-        p_city = f"Extract the specific city name in English from: '{msg}'. If it is a country, return the capital city. Respond ONLY with the city name, nothing else."
+        # Умный поиск города
+        p_city = f"Analyze the location in this text: '{msg}'. If it is a COUNTRY, respond ONLY with the word 'COUNTRY'. If it is a CITY, respond ONLY with the city name in English. Nothing else."
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "").lower()
+        
+        if city_en == "country":
+            return JSONResponse(content={"reply": "Вы указали целую страну 🌍. Пожалуйста, уточните, какой именно <b>город</b> вас интересует (например: столица или курорт)?"})
         
         if not city_en or "none" in city_en or len(city_en) < 2:
             return JSONResponse(content={"reply": "Пожалуйста, укажите конкретный город, например: Париж или Токио."})
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
         
-        # Меняем версию ключа на v9, чтобы сбросить иероглифы
-        db_key = f"v9:booking:{city_en}:{intent}"
-        lock_key = f"lock:v9:{city_en}:{intent}"
+        # Меняем версию ключа на v11, чтобы очистить память от "глючного" Лондона
+        db_key = f"v11:booking:{city_en}:{intent}"
+        lock_key = f"lock:v11:{city_en}:{intent}"
 
         full_list = []
         if redis_db:
             raw = redis_db.get(db_key)
             full_list = json.loads(raw) if raw else []
 
-        # Обновление раз в сутки
         if redis_db and not redis_db.get(lock_key):
             existing_ids = [item['id'] for item in full_list]
             new_items = get_new_hotels(city_en, intent, existing_ids)
 
             if new_items:
-                # ИСПРАВЛЕНИЕ: Жестко требуем ТОЛЬКО русский язык
                 g_prompt = f"""
                 У меня есть данные о 3 отелях в городе {city_en}: {json.dumps(new_items)}.
                 Твоя задача — вернуть валидный JSON.
                 ПРАВИЛО 1: В массив 'cats' скопируй данные отелей (id, название), а в 'd' напиши краткое описание.
-                ПРАВИЛО 2: В поле 'adv' напиши ОДИН лайфхак для туриста.
-                СУПЕР-ПРАВИЛО: Весь сгенерированный текст должен быть СТРОГО НА ЧИСТОМ РУССКОМ ЯЗЫКЕ. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать китайские иероглифы, вьетнамские или любые другие иностранные слова!
+                ПРАВИЛО 2: В поле 'adv' напиши ОДИН лайфхак для туриста (транспорт, еда, налоги).
+                СУПЕР-ПРАВИЛО: Весь текст должен быть СТРОГО НА ЧИСТОМ РУССКОМ ЯЗЫКЕ. Категорически запрещены китайские, вьетнамские или другие иностранные слова!
                 JSON ONLY: {{'adv': 'текст лайфхака', 'cats': [ {{'id': 'id', 'n': 'название отеля', 'cat': 'ОТЕЛЬ', 'd': 'описание отеля'}} ]}}
                 """
                 g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
@@ -112,7 +113,7 @@ async def handle_chat(payload: ChatPayload):
                     redis_db.set(db_key, json.dumps(full_list))
                     redis_db.set(lock_key, "1", ex=86400)
 
-        if not full_list: return JSONResponse(content={"reply": "Отели не найдены. Проверьте название города."})
+        if not full_list: return JSONResponse(content={"reply": "Отели не найдены. Проверьте правильность написания города."})
 
         # --- ЛОГИКА ОТОБРАЖЕНИЯ ---
         display_limit = 5
@@ -120,33 +121,32 @@ async def handle_chat(payload: ChatPayload):
         hidden_count = len(full_list) - display_limit
 
         html = f"""
-        <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: #f5f5f5; padding: 20px 0;">
-            <div style="max-width: 1000px; margin: 0 auto; padding: 0 15px;">
-                <h2 style="font-size: 22px; font-weight: 700; color: #003580; margin-bottom: 20px;">{city_en.capitalize()}: {len(full_list)} вариантов найдено</h2>
+        <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: transparent; padding: 10px 0; box-sizing: border-box;">
+            <div style="max-width: 1000px; margin: 0 auto; box-sizing: border-box;">
+                <h2 style="font-size: 20px; font-weight: 700; color: #003580; margin-bottom: 15px; box-sizing: border-box;">{city_en.capitalize()}: {len(full_list)} вариантов найдено</h2>
         """
         
         for h in to_show:
             link = f"https://www.stay22.com/allez/booking/{h['id']}?aid={STAY22_AID}"
             html += f"""
-            <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px;">
-                <div style="flex: 1; min-width: 280px;">
+            <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 15px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 15px; box-sizing: border-box;">
+                <div style="flex: 1; min-width: 280px; box-sizing: border-box;">
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                        <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'Рекомендуем')}</span>
+                        <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'ОТЕЛЬ')}</span>
                         <span style="color: #008009; font-size: 12px; font-weight: 700;">✓ Проверено</span>
                     </div>
                     <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h['n']}</div>
                     <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h['d']}</div>
                 </div>
-                <div style="text-align: right; min-width: 150px;">
-                    <a href="{link}" target="_blank" style="background: #006ce4; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 14px; font-weight: 600; display: inline-block;">Показать цены</a>
+                <div style="text-align: right; min-width: 150px; box-sizing: border-box;">
+                    <a href="{link}" target="_blank" style="background: #006ce4; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 14px; font-weight: 600; display: inline-block; text-align: center; width: 100%; box-sizing: border-box;">Показать цены</a>
                 </div>
             </div>
             """
         
-        # Блок экспертного совета
         if to_show[0].get('advice'):
             html += f"""
-            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 20px 0; display: flex; align-items: center; gap: 15px;">
+            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 20px 0; display: flex; align-items: center; gap: 15px; box-sizing: border-box;">
                 <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: bold;">i</div>
                 <div style="font-size: 14px; color: #003580; line-height: 1.5;"><b>💡 Совет эксперта по {city_en.capitalize()}:</b> {to_show[0]['advice']}</div>
             </div>"""
@@ -159,10 +159,11 @@ async def handle_chat(payload: ChatPayload):
             btn_label = "Найти все варианты на карте →"
             btn_style = "background: #003580; color: #ffffff; border: none;"
 
-        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; text-decoration: none; border-radius: 4px; font-weight: 700; font-size: 15px; {btn_style}'>{btn_label}</a>"
+        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; text-decoration: none; border-radius: 4px; font-weight: 700; font-size: 15px; box-sizing: border-box; {btn_style}'>{btn_label}</a>"
         
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
     except Exception as e:
         print(f"Error: {e}")
-        return JSONResponse(content={"reply": "Ошибка. Попробуйте еще раз."})
+        # Теперь, если что-то сломается, мы увидим ТОЧНУЮ техническую причину!
+        return JSONResponse(content={"reply": f"Техническая ошибка: {str(e)}"})
