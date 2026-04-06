@@ -29,8 +29,8 @@ STAY22_AID = "bstay24"
 class ChatPayload(BaseModel):
     message: str
 
-def get_flag_emoji(country_code):
-    """Превращает 'GB' в 🇬🇧"""
+def get_flag(country_code):
+    """Превращает код страны (GB, RU и т.д.) в эмодзи флаг"""
     if not country_code or len(country_code) != 2: return "📍"
     return "".join(chr(127397 + ord(c)) for c in country_code.upper())
 
@@ -41,7 +41,7 @@ def get_new_hotels(city_en, intent, existing_ids):
                              headers=headers, params={"query": city_en}, timeout=10)
         loc_data = l_res.json()['data'][0]
         dest_id = loc_data['id']
-        country_code = loc_data.get('country', 'GB')
+        country_code = loc_data.get('country', 'UN') # Код страны для флага
         
         params = {
             "locationId": dest_id, 
@@ -62,7 +62,7 @@ def get_new_hotels(city_en, intent, existing_ids):
                 new_found.append({"id": h_id, "name": x.get('name') or x.get('hotel_name')})
             if len(new_found) >= 3: break
         return new_found, country_code
-    except: return [], "GB"
+    except: return [], "UN"
 
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
@@ -77,23 +77,23 @@ async def handle_chat(payload: ChatPayload):
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
-        db_key = f"v10:booking:{city_en.lower()}:{intent}"
+        db_key = f"v8:booking:{city_en.lower()}:{intent}"
 
         full_list = []
-        country_code = "GB"
+        country_code = "UN"
         if redis_db:
             raw = redis_db.get(db_key)
             if raw:
-                stored = json.loads(raw)
-                full_list = stored.get('hotels', [])
-                country_code = stored.get('country', 'GB')
+                data_stored = json.loads(raw)
+                full_list = data_stored.get('hotels', [])
+                country_code = data_stored.get('country', 'UN')
 
         existing_ids = [item['id'] for item in full_list]
         new_items, new_country = get_new_hotels(city_en, intent, existing_ids)
-        if new_country: country_code = new_country
+        if new_country != "UN": country_code = new_country
 
         if new_items:
-            g_prompt = f"Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. Добавь совет. JSON ONLY: {{'adv': 'совет', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}"
+            g_prompt = f"Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. Добавь один совет туристу. JSON ONLY: {{'adv': 'совет', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}"
             g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                 json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
             new_data = json.loads(g_res.json()['choices'][0]['message']['content'])
@@ -110,42 +110,45 @@ async def handle_chat(payload: ChatPayload):
 
         to_show = full_list[:10]
         hidden_count = len(full_list) - 10
-        flag = get_flag_emoji(country_code)
+        flag = get_flag(country_code)
 
+        # Сборка HTML
         html = f"""
-        <div style="width: 100%; font-family: -apple-system, sans-serif; color: #1a1a1a; background: #f5f5f5; padding-bottom: 10px; border-radius: 8px; overflow: hidden;">
-            <div style="padding: 20px; background: #fff; border-bottom: 1px solid #e7e7e7; margin-bottom: 15px;">
-                <h2 style="font-size: 22px; color: #003580; margin: 0; display: flex; align-items: center; gap: 12px;">
-                    <span style="font-size: 28px;">{flag}</span> {city_en.capitalize()}: {len(full_list)} вариантов
+        <style>
+            @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+            .booking-container {{ animation: fadeIn 0.5s ease-out; width: 100%; font-family: sans-serif; color: #1a1a1a; }}
+        </style>
+        <div class="booking-container">
+            <div style="max-width: 1000px; margin: 0 auto; padding: 10px;">
+                <h2 style="font-size: 22px; color: #003580; display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+                    <span style="font-size: 30px;">{flag}</span> {city_en.capitalize()}: {len(full_list)} вариантов
                 </h2>
-            </div>
-            <div style="padding: 0 15px;">
         """
         
         for h in to_show:
             link = f"https://www.stay22.com/allez/booking/{h['id']}?aid={STAY22_AID}"
             html += f"""
-            <div style="background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 20px;">
-                <div style="flex: 1;">
-                    <span style="background: #003580; color: #fff; font-size: 10px; font-weight: bold; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">{h.get('cat', 'Отель')}</span>
-                    <div style="font-size: 18px; font-weight: bold; color: #006ce4; margin: 5px 0;">{h['n']}</div>
-                    <div style="font-size: 13px; color: #4a4a4a;">{h['d']}</div>
+            <div style="background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
+                <div style="flex: 1; min-width: 250px;">
+                    <div style="background: #003580; color: #fff; font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px;">{h.get('cat', 'Отель')}</div>
+                    <div style="font-size: 18px; font-weight: bold; color: #006ce4; margin-bottom: 5px;">{h['n']}</div>
+                    <div style="font-size: 13px; color: #4a4a4a; line-height: 1.4;">{h['d']}</div>
                 </div>
-                <a href="{link}" target="_blank" style="background: #006ce4; color: #fff; text-decoration: none; padding: 12px 20px; border-radius: 4px; font-size: 14px; font-weight: bold; white-space: nowrap;">Забронировать</a>
+                <a href="{link}" target="_blank" style="background: #006ce4; color: #fff; text-decoration: none; padding: 12px 25px; border-radius: 4px; font-size: 14px; font-weight: bold; white-space: nowrap;">Показать цены</a>
             </div>
             """
         
         if to_show[0].get('advice'):
             html += f"""
-            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 15px; margin: 15px 0; color: #003580; font-size: 14px;">
-                <b>💡 Совет эксперта:</b> {to_show[0]['advice']}
+            <div style="background: #ebf3ff; border-radius: 8px; padding: 15px; border-left: 5px solid #003580; margin: 20px 0; font-size: 14px; color: #003580;">
+                <b style="display: block; margin-bottom: 4px;">💡 Совет эксперта:</b> {to_show[0]['advice']}
             </div>"""
 
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
-        btn_text = f"Загрузить еще {hidden_count} вариантов →" if hidden_count > 0 else "Смотреть всё на карте"
-        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 15px; background: #003580; color: #fff; text-decoration: none; border-radius: 4px; font-weight: bold;'>{btn_text}</a>"
+        btn_text = f"Загрузить ещё {hidden_count} вариантов →" if hidden_count > 0 else "Найти все на карте →"
+        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 15px; background: #003580; color: #fff; text-decoration: none; border-radius: 4px; font-weight: bold; margin-top: 10px;'>{btn_text}</a>"
         
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
-    except:
-        return JSONResponse(content={"reply": "Ошибка. Попробуйте еще раз."})
+    except Exception as e:
+        return JSONResponse(content={"reply": "Попробуйте еще раз через минуту."})
