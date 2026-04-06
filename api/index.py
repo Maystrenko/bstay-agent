@@ -29,6 +29,11 @@ STAY22_AID = "bstay24"
 class ChatPayload(BaseModel):
     message: str
 
+def get_flag_emoji(country_code):
+    """Превращает 'GB' в 🇬🇧"""
+    if not country_code or len(country_code) != 2: return "📍"
+    return "".join(chr(127397 + ord(c)) for c in country_code.upper())
+
 def get_new_hotels(city_en, intent, existing_ids):
     try:
         headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": "booking-com18.p.rapidapi.com"}
@@ -36,7 +41,7 @@ def get_new_hotels(city_en, intent, existing_ids):
                              headers=headers, params={"query": city_en}, timeout=10)
         loc_data = l_res.json()['data'][0]
         dest_id = loc_data['id']
-        country_code = loc_data.get('country', 'un').lower() # Код для flagcdn
+        country_code = loc_data.get('country', 'GB')
         
         params = {
             "locationId": dest_id, 
@@ -57,7 +62,7 @@ def get_new_hotels(city_en, intent, existing_ids):
                 new_found.append({"id": h_id, "name": x.get('name') or x.get('hotel_name')})
             if len(new_found) >= 3: break
         return new_found, country_code
-    except: return [], "un"
+    except: return [], "GB"
 
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
@@ -72,23 +77,23 @@ async def handle_chat(payload: ChatPayload):
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
-        db_key = f"v9:booking:{city_en.lower()}:{intent}"
+        db_key = f"v10:booking:{city_en.lower()}:{intent}"
 
         full_list = []
-        country_code = "un"
+        country_code = "GB"
         if redis_db:
             raw = redis_db.get(db_key)
             if raw:
                 stored = json.loads(raw)
                 full_list = stored.get('hotels', [])
-                country_code = stored.get('country', 'un')
+                country_code = stored.get('country', 'GB')
 
         existing_ids = [item['id'] for item in full_list]
         new_items, new_country = get_new_hotels(city_en, intent, existing_ids)
-        if new_country != "un": country_code = new_country
+        if new_country: country_code = new_country
 
         if new_items:
-            g_prompt = f"Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. Добавь совет туристу. JSON ONLY: {{'adv': 'совет', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}"
+            g_prompt = f"Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. Добавь совет. JSON ONLY: {{'adv': 'совет', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}"
             g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                 json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
             new_data = json.loads(g_res.json()['choices'][0]['message']['content'])
@@ -105,52 +110,40 @@ async def handle_chat(payload: ChatPayload):
 
         to_show = full_list[:10]
         hidden_count = len(full_list) - 10
-        # Используем внешнюю картинку флага для надежности
-        flag_url = f"https://flagcdn.com/w40/{country_code}.png"
+        flag = get_flag_emoji(country_code)
 
         html = f"""
-        <style>
-            @keyframes slideUp {{ from {{ opacity: 0; transform: translateY(15px); }} to {{ opacity: 1; transform: translateY(0); }} }}
-            .b-wrap {{ animation: slideUp 0.4s ease-out; width: 100%; font-family: 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding-bottom: 20px; }}
-            .b-card {{ background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 20px; transition: box-shadow 0.2s; }}
-            .b-card:hover {{ box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
-        </style>
-        <div class="b-wrap">
-            <div style="max-width: 1000px; margin: 0 auto; padding: 15px;">
-                <div style="height: 50px; display: flex; align-items: center; gap: 15px; margin-bottom: 10px;">
-                    <img src="{flag_url}" width="35" style="border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">
-                    <h2 style="font-size: 24px; color: #003580; margin: 0;">{city_en.capitalize()}: {len(full_list)} вариантов</h2>
-                </div>
+        <div style="width: 100%; font-family: -apple-system, sans-serif; color: #1a1a1a; background: #f5f5f5; padding-bottom: 10px; border-radius: 8px; overflow: hidden;">
+            <div style="padding: 20px; background: #fff; border-bottom: 1px solid #e7e7e7; margin-bottom: 15px;">
+                <h2 style="font-size: 22px; color: #003580; margin: 0; display: flex; align-items: center; gap: 12px;">
+                    <span style="font-size: 28px;">{flag}</span> {city_en.capitalize()}: {len(full_list)} вариантов
+                </h2>
+            </div>
+            <div style="padding: 0 15px;">
         """
         
         for h in to_show:
             link = f"https://www.stay22.com/allez/booking/{h['id']}?aid={STAY22_AID}"
             html += f"""
-            <div class="b-card">
+            <div style="background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 20px;">
                 <div style="flex: 1;">
-                    <div style="margin-bottom: 6px;">
-                        <span style="background: #003580; color: #fff; font-size: 11px; font-weight: bold; padding: 3px 10px; border-radius: 4px; text-transform: uppercase;">{h.get('cat', 'Отель')}</span>
-                    </div>
-                    <div style="font-size: 19px; font-weight: bold; color: #006ce4; margin-bottom: 5px;">{h['n']}</div>
-                    <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h['d']}</div>
+                    <span style="background: #003580; color: #fff; font-size: 10px; font-weight: bold; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">{h.get('cat', 'Отель')}</span>
+                    <div style="font-size: 18px; font-weight: bold; color: #006ce4; margin: 5px 0;">{h['n']}</div>
+                    <div style="font-size: 13px; color: #4a4a4a;">{h['d']}</div>
                 </div>
-                <div style="text-align: right;">
-                    <div style="color: #008009; font-size: 12px; font-weight: 700; margin-bottom: 10px;">Бесплатная отмена</div>
-                    <a href="{link}" target="_blank" style="background: #006ce4; color: #fff; text-decoration: none; padding: 12px 25px; border-radius: 4px; font-size: 14px; font-weight: bold; display: inline-block;">Показать цены</a>
-                </div>
+                <a href="{link}" target="_blank" style="background: #006ce4; color: #fff; text-decoration: none; padding: 12px 20px; border-radius: 4px; font-size: 14px; font-weight: bold; white-space: nowrap;">Забронировать</a>
             </div>
             """
         
         if to_show[0].get('advice'):
             html += f"""
-            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 18px; margin: 20px 0; display: flex; gap: 15px; align-items: center;">
-                <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: bold;">!</div>
-                <div style="font-size: 14px; color: #003580;"><b>Совет туристам:</b> {to_show[0]['advice']}</div>
+            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 15px; margin: 15px 0; color: #003580; font-size: 14px;">
+                <b>💡 Совет эксперта:</b> {to_show[0]['advice']}
             </div>"""
 
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
-        txt = f"Загрузить ещё {hidden_count} отелей →" if hidden_count > 0 else "Посмотреть всё на карте"
-        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; background: #003580; color: #fff; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 15px;'>{txt}</a>"
+        btn_text = f"Загрузить еще {hidden_count} вариантов →" if hidden_count > 0 else "Смотреть всё на карте"
+        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 15px; background: #003580; color: #fff; text-decoration: none; border-radius: 4px; font-weight: bold;'>{btn_text}</a>"
         
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
