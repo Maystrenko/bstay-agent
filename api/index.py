@@ -109,7 +109,7 @@ async def handle_chat(payload: ChatPayload):
         # --- СБОРКА HTML (BOOKING STYLE + FULL WIDTH) ---
         html = f"""
         <div style="font-family: 'BlinkMacSystemFont', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; width: 100%; color: #1a1a1a; background: #f5f5f5; padding: 20px 0;">
-            <div style="max-width: 1000px; margin: 0 auto; padding: 0 15px;">
+            <div style="max-width: 100%; margin: 0 auto; padding: 0 15px;">
                 <h2 style="font-size: 24px; font-weight: 700; color: #003580; margin-bottom: 20px;">{city_en.capitalize()}: найдено {len(full_list)} вариантов</h2>
         """
         
