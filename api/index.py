@@ -27,7 +27,7 @@ class ChatPayload(BaseModel):
     message: str
     lang: str = "en" 
 
-def get_new_hotels(city_en, intent, existing_ids):
+def get_new_hotels(city_en, existing_ids):
     try:
         headers = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": "booking-com18.p.rapidapi.com"}
         l_res = requests.get("https://booking-com18.p.rapidapi.com/stays/auto-complete", 
@@ -40,7 +40,6 @@ def get_new_hotels(city_en, intent, existing_ids):
             "checkoutDate": (datetime.now()+timedelta(days=33)).strftime('%Y-%m-%d'),
             "adults": "2", "currency_code": "USD"
         }
-        if intent == "cheap": params["sortBy"] = "price_lowest"
         
         h_res = requests.get("https://booking-com18.p.rapidapi.com/stays/search", headers=headers, params=params, timeout=15)
         data = h_res.json().get('data', [])
@@ -65,32 +64,41 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     UI_LANGS = {
-        'ru': {'err_city': "Пожалуйста, укажите конкретный город.", 'not_found': "Отели не найдены.", 'found': "вариантов найдено", 'hotel': "ОТЕЛЬ", 'verified': "✓ Проверено", 'show_prices': "Показать цены", 'advice_title': "💡 Совет эксперта по", 'show_more': "Показать ещё", 'hotels_more': "отелей →", 'show_all': "Найти все варианты на карте →"},
-        'en': {'err_city': "Please specify a specific city.", 'not_found': "No hotels found.", 'found': "options found", 'hotel': "HOTEL", 'verified': "✓ Verified", 'show_prices': "Show prices", 'advice_title': "💡 Expert advice for", 'show_more': "Show", 'hotels_more': "more hotels →", 'show_all': "Find all options on map →"},
-        'es': {'err_city': "Por favor, especifica una ciudad.", 'not_found': "No se encontraron hoteles.", 'found': "opciones encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver precios", 'advice_title': "💡 Consejo de experto para", 'show_more': "Mostrar", 'hotels_more': "hoteles más →", 'show_all': "Ver todas las opciones en el mapa →"},
-        'de': {'err_city': "Bitte geben Sie eine bestimmte Stadt an.", 'not_found': "Keine Hotels gefunden.", 'found': "Optionen gefunden", 'hotel': "HOTEL", 'verified': "✓ Überprüft", 'show_prices': "Preise anzeigen", 'advice_title': "💡 Expertentipp für", 'show_more': "Zeige", 'hotels_more': "weitere Hotels →", 'show_all': "Alle Optionen auf der Karte finden →"},
-        'fr': {'err_city': "Veuillez préciser une ville.", 'not_found': "Aucun hôtel trouvé.", 'found': "options trouvées", 'hotel': "HÔTEL", 'verified': "✓ Vérifié", 'show_prices': "Voir les prix", 'advice_title': "💡 Conseil d'expert pour", 'show_more': "Afficher", 'hotels_more': "hôtels de plus →", 'show_all': "Trouver toutes les options sur la carte →"},
-        'it': {'err_city': "Specifica una città.", 'not_found': "Nessun hotel trovato.", 'found': "opzioni trovate", 'hotel': "HOTEL", 'verified': "✓ Verificato", 'show_prices': "Mostra prezzi", 'advice_title': "💡 Consiglio dell'esperto per", 'show_more': "Mostra altri", 'hotels_more': "hotel →", 'show_all': "Trova tutte le opzioni sulla mappa →"},
-        'pt': {'err_city': "Por favor, especifique uma cidade.", 'not_found': "Nenhum hotel encontrado.", 'found': "opções encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver preços", 'advice_title': "💡 Dica de especialista para", 'show_more': "Mostrar mais", 'hotels_more': "hotéis →", 'show_all': "Ver todas as opções no mapa →"},
-        'tr': {'err_city': "Lütfen belirli bir şehir belirtin.", 'not_found': "Otel bulunamadı.", 'found': "seçenek bulundu", 'hotel': "OTEL", 'verified': "✓ Doğrulandı", 'show_prices': "Fiyatları göster", 'advice_title': "💡 Uzman tavsiyesi:", 'show_more': "Daha fazla", 'hotels_more': "otel göster →", 'show_all': "Haritadaki tüm seçenekleri bul →"},
-        'zh': {'err_city': "请指定一个具体城市。", 'not_found': "未找到酒店。", 'found': "个选项", 'hotel': "酒店", 'verified': "✓ 已验证", 'show_prices': "查看价格", 'advice_title': "💡 专家建议", 'show_more': "显示更多", 'hotels_more': "家酒店 →", 'show_all': "在地图上查找所有选项 →"},
-        'ja': {'err_city': "特定の都市を指定してください。", 'not_found': "ホテルが見つかりません。", 'found': "件のオプション", 'hotel': "ホテル", 'verified': "✓ 確認済み", 'show_prices': "価格を見る", 'advice_title': "💡 専門家のアドバイス", 'show_more': "さらに", 'hotels_more': "件のホテルを表示 →", 'show_all': "地図上ですべてのオプションを見つける →"}
+        'ru': {'err_city': "Пожалуйста, укажите конкретный город.", 'not_found': "По вашему запросу отели не найдены.", 'found': "вариантов найдено", 'hotel': "ОТЕЛЬ", 'verified': "✓ Проверено", 'show_prices': "Показать цены", 'advice_title': "💡 Совет эксперта по", 'show_more': "Показать ещё", 'hotels_more': "вариантов из нашей базы ⬇️", 'show_all': "🗺️ Посмотреть все варианты на карте", 'more_cmd': "Еще", 'filter_msg': "Отфильтровано по вашему запросу!"},
+        'en': {'err_city': "Please specify a specific city.", 'not_found': "No hotels found matching your request.", 'found': "options found", 'hotel': "HOTEL", 'verified': "✓ Verified", 'show_prices': "Show prices", 'advice_title': "💡 Expert advice for", 'show_more': "Show", 'hotels_more': "more from our database ⬇️", 'show_all': "🗺️ Find all options on map", 'more_cmd': "More", 'filter_msg': "Filtered matching your request!"},
+        'es': {'err_city': "Por favor, especifica una ciudad.", 'not_found': "No se encontraron hoteles.", 'found': "opciones encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver precios", 'advice_title': "💡 Consejo para", 'show_more': "Mostrar", 'hotels_more': "más de nuestra base ⬇️", 'show_all': "🗺️ Ver todas las opciones en el mapa", 'more_cmd': "Más", 'filter_msg': "¡Filtrado según su solicitud!"},
+        'de': {'err_city': "Bitte geben Sie eine Stadt an.", 'not_found': "Keine Hotels gefunden.", 'found': "Optionen gefunden", 'hotel': "HOTEL", 'verified': "✓ Überprüft", 'show_prices': "Preise anzeigen", 'advice_title': "💡 Tipp für", 'show_more': "Zeige", 'hotels_more': "weitere aus unserer Datenbank ⬇️", 'show_all': "🗺️ Alle Optionen auf der Karte finden", 'more_cmd': "Mehr", 'filter_msg': "Gefiltert nach Ihrer Anfrage!"},
+        'fr': {'err_city': "Veuillez préciser une ville.", 'not_found': "Aucun hôtel trouvé.", 'found': "options trouvées", 'hotel': "HÔTEL", 'verified': "✓ Vérifié", 'show_prices': "Voir les prix", 'advice_title': "💡 Conseil pour", 'show_more': "Afficher", 'hotels_more': "plus de notre base ⬇️", 'show_all': "🗺️ Trouver toutes les options sur la carte", 'more_cmd': "Plus", 'filter_msg': "Filtré selon votre demande !"}
     }
     t = UI_LANGS.get(user_lang, UI_LANGS['en'])
 
     try:
-        # ВОЗВРАЩЕНО ПРАВИЛО: "Если это страна, верни её столицу"
-        p_city = f"Extract the specific city name in English from: '{msg}'. If it is a country, return its capital city. Respond ONLY with the city name, nothing else."
+        # ШАГ 1: МГНОВЕННЫЙ АНАЛИЗ ЗАПРОСА (используем супербыструю 8b модель)
+        analyzer_prompt = f"""
+        Analyze the user's travel query: '{msg}'. Respond ONLY with valid JSON.
+        {{
+          "city": "Specific city name in English (if country, put capital city. If none, null)",
+          "filter": "Translate specific request to English (e.g. 'pool', 'cheap', 'center'). If no specific request, null",
+          "wants_more": true if user asks for 'more', 'next', 'еще', 'другие', else false
+        }}
+        """
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
-            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
-        city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "").lower()
+            json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": analyzer_prompt}], "response_format": {"type": "json_object"}}, timeout=5)
         
-        if not city_en or "none" in city_en or len(city_en) < 2: return JSONResponse(content={"reply": t['err_city']})
+        try:
+            intent_data = json.loads(c_res.json()['choices'][0]['message']['content'])
+        except:
+            return JSONResponse(content={"reply": t['err_city']})
+
+        city_en = intent_data.get('city')
+        if not city_en: return JSONResponse(content={"reply": t['err_city']})
+        city_en = city_en.lower()
+        user_filter = intent_data.get('filter')
+        wants_more = intent_data.get('wants_more', False)
         
-        intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж", "cheap", "barato", "billig"]) else "general"
-        
-        db_key = f"v15:booking:{city_en}:{intent}:{user_lang}"
-        lock_key = f"lock:v15:{city_en}:{intent}:{user_lang}"
+        # Меняем версию базы на v16 (Единая мега-база)
+        db_key = f"v16:booking:{city_en}:{user_lang}"
+        lock_key = f"lock:v16:{city_en}:{user_lang}"
 
         full_list = []
         if redis_db:
@@ -100,9 +108,10 @@ async def handle_chat(payload: ChatPayload):
                 full_list = parsed if isinstance(parsed, list) else []
             except: full_list = []
 
+        # ШАГ 2: ДОБАВЛЕНИЕ НОВЫХ ОТЕЛЕЙ (Раз в сутки)
         if redis_db and not redis_db.get(lock_key):
             existing_ids = [item['id'] for item in full_list if isinstance(item, dict)]
-            new_items = get_new_hotels(city_en, intent, existing_ids)
+            new_items = get_new_hotels(city_en, existing_ids)
 
             if new_items:
                 g_prompt = f"""
@@ -110,7 +119,7 @@ async def handle_chat(payload: ChatPayload):
                 Your task is to return a valid JSON.
                 RULE 1: In 'cats' array, copy hotel data (id, name), and in 'd' write a short description.
                 RULE 2: In 'adv' write ONE travel hack for tourists in this city.
-                SUPER-RULE: ALL text (descriptions and advice) MUST be written in the language corresponding to ISO code '{user_lang.upper()}'. NO OTHER LANGUAGES ALLOWED!
+                SUPER-RULE: ALL text MUST be written in the language corresponding to ISO code '{user_lang.upper()}'. NO OTHER LANGUAGES ALLOWED!
                 JSON ONLY: {{"adv": "text", "cats": [ {{"id": "id", "n": "name", "cat": "{t['hotel']}", "d": "description"}} ]}}
                 """
                 g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
@@ -120,13 +129,7 @@ async def handle_chat(payload: ChatPayload):
                     new_data = json.loads(g_res.json()['choices'][0]['message']['content'])
                     last_adv = new_data.get('adv', '')
                     raw_cats = new_data.get('cats', [])
-                    
                     if isinstance(raw_cats, dict): raw_cats = [raw_cats]
-                    elif isinstance(raw_cats, str):
-                        try: raw_cats = json.loads(raw_cats)
-                        except: raw_cats = []
-                        if isinstance(raw_cats, dict): raw_cats = [raw_cats]
-
                     for h in raw_cats:
                         if isinstance(h, dict):
                             h['advice'] = last_adv
@@ -135,18 +138,39 @@ async def handle_chat(payload: ChatPayload):
                     if redis_db and full_list:
                         redis_db.set(db_key, json.dumps(full_list))
                         redis_db.set(lock_key, "1", ex=86400)
-                except Exception as parse_e: print(f"JSON Parse Error: {parse_e}")
+                except: pass
 
         if not full_list: return JSONResponse(content={"reply": t['not_found']})
 
-        display_limit = 5
-        to_show = full_list[:display_limit]
-        hidden_count = len(full_list) - display_limit
+        # ШАГ 3: УМНЫЙ ВЫБОР ТОГО, ЧТО ПОКАЗАТЬ (Фильтры ИИ или кнопка "ЕЩЕ")
+        to_show = []
+        is_filtered = False
 
+        if user_filter and len(full_list) > 3:
+            # Если пользователь ищет "с бассейном", просим ИИ выбрать 5 лучших из нашей базы
+            f_prompt = f"Find up to 5 hotels matching: '{user_filter}'. Hotels: {json.dumps([{'id': h.get('id'), 'n': h.get('n'), 'd': h.get('d')} for h in full_list[:30]])}. Respond ONLY with JSON: {{\"ids\": [\"id1\", \"id2\"]}}"
+            f_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
+                json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": f_prompt}], "response_format": {"type": "json_object"}}, timeout=5)
+            try:
+                filtered_ids = json.loads(f_res.json()['choices'][0]['message']['content']).get('ids', [])
+                to_show = [h for h in full_list if h.get('id') in filtered_ids][:5]
+                is_filtered = True
+            except: to_show = full_list[:5]
+        elif wants_more and len(full_list) > 5:
+            # Если нажал кнопку "Еще", перемешиваем базу, чтобы показать новые
+            to_show = random.sample(full_list, min(5, len(full_list)))
+        
+        if not to_show:
+            to_show = full_list[:5]
+
+        hidden_count = len(full_list) - len(to_show)
+
+        # ШАГ 4: ГЕНЕРАЦИЯ HTML-ИНТЕРФЕЙСА
+        subtitle = f"<span style='color: #008009; font-size: 14px;'>✨ {t['filter_msg']}</span>" if is_filtered else f"{len(full_list)} {t['found']}"
         html = f"""
         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: transparent; padding: 10px 0; box-sizing: border-box;">
             <div style="max-width: 1000px; margin: 0 auto; box-sizing: border-box;">
-                <h2 style="font-size: 20px; font-weight: 700; color: #003580; margin-bottom: 15px; box-sizing: border-box;">{city_en.capitalize()}: {len(full_list)} {t['found']}</h2>
+                <h2 style="font-size: 20px; font-weight: 700; color: #003580; margin-bottom: 15px; box-sizing: border-box;">{city_en.capitalize()}: {subtitle}</h2>
         """
         
         for h in to_show:
@@ -168,22 +192,23 @@ async def handle_chat(payload: ChatPayload):
             </div>
             """
         
-        if len(to_show) > 0 and isinstance(to_show[0], dict) and to_show[0].get('advice'):
+        if len(to_show) > 0 and isinstance(to_show[0], dict) and to_show[0].get('advice') and not is_filtered:
             html += f"""
             <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 20px 0; display: flex; align-items: center; gap: 15px; box-sizing: border-box;">
                 <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: bold;">i</div>
                 <div style="font-size: 14px; color: #003580; line-height: 1.5;"><b>{t['advice_title']} {city_en.capitalize()}:</b> {to_show[0]['advice']}</div>
             </div>"""
 
+        # НОВЫЕ КНОПКИ: "Показать еще внутри чата" и "Перейти на карту"
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
+        
         if hidden_count > 0:
             btn_label = f"{t['show_more']} {hidden_count} {t['hotels_more']}"
-            btn_style = "background: #ffffff; color: #006ce4; border: 1px solid #006ce4;"
-        else:
-            btn_label = f"{t['show_all']}"
-            btn_style = "background: #003580; color: #ffffff; border: none;"
+            # МАГИЯ: Эта кнопка сама впишет "Еще Лондон" в поле ввода и нажмет "Найти"
+            btn_action = f"let inp=document.getElementById('user-input'); if(inp){{inp.value='{t['more_cmd']} {city_en.capitalize()}'; document.getElementById('ui-button').click();}} return false;"
+            html += f"<button onclick=\"{btn_action}\" style='display: block; width: 100%; text-align: center; padding: 16px; margin-bottom: 12px; background: #ffffff; color: #006ce4; border: 1px solid #006ce4; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer; box-sizing: border-box;'>{btn_label}</button>"
 
-        html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; text-decoration: none; border-radius: 4px; font-weight: 700; font-size: 15px; box-sizing: border-box; {btn_style}'>{btn_label}</a>"
+        html += f"<a href='{all_link}' target='_blank' style='display: block; width: 100%; text-align: center; padding: 16px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 15px; box-sizing: border-box; background: #003580; color: #ffffff; border: none;'>{t['show_all']}</a>"
         
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
