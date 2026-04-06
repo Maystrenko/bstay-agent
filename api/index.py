@@ -24,7 +24,7 @@ except Exception as e:
 
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
-STAY22_AID = "btr" # Твой партнерский тег!
+STAY22_AID = "btr" # Твоя партнерка
 
 class ChatPayload(BaseModel):
     message: str
@@ -50,6 +50,7 @@ def get_new_hotels(city_en, intent, existing_ids):
         
         new_found = []
         for x in data:
+            if not isinstance(x, dict): continue # Броня от плохих данных
             h_id = str(x.get('hotel_id') or x.get('id'))
             if h_id not in existing_ids:
                 new_found.append({"id": h_id, "name": x.get('name') or x.get('hotel_name')})
@@ -64,7 +65,6 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     try:
-        # Умный поиск города
         p_city = f"Analyze the location in this text: '{msg}'. If it is a COUNTRY, respond ONLY with the word 'COUNTRY'. If it is a CITY, respond ONLY with the city name in English. Nothing else."
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
@@ -78,17 +78,22 @@ async def handle_chat(payload: ChatPayload):
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
         
-        # Меняем версию ключа на v11, чтобы очистить память от "глючного" Лондона
-        db_key = f"v11:booking:{city_en}:{intent}"
-        lock_key = f"lock:v11:{city_en}:{intent}"
+        # v12 - чистая память!
+        db_key = f"v12:booking:{city_en}:{intent}"
+        lock_key = f"lock:v12:{city_en}:{intent}"
 
         full_list = []
         if redis_db:
             raw = redis_db.get(db_key)
-            full_list = json.loads(raw) if raw else []
+            try:
+                parsed = json.loads(raw) if raw else []
+                # Броня: берем из базы только если это список
+                full_list = parsed if isinstance(parsed, list) else []
+            except:
+                full_list = []
 
         if redis_db and not redis_db.get(lock_key):
-            existing_ids = [item['id'] for item in full_list]
+            existing_ids = [item['id'] for item in full_list if isinstance(item, dict)]
             new_items = get_new_hotels(city_en, intent, existing_ids)
 
             if new_items:
@@ -98,20 +103,34 @@ async def handle_chat(payload: ChatPayload):
                 ПРАВИЛО 1: В массив 'cats' скопируй данные отелей (id, название), а в 'd' напиши краткое описание.
                 ПРАВИЛО 2: В поле 'adv' напиши ОДИН лайфхак для туриста (транспорт, еда, налоги).
                 СУПЕР-ПРАВИЛО: Весь текст должен быть СТРОГО НА ЧИСТОМ РУССКОМ ЯЗЫКЕ. Категорически запрещены китайские, вьетнамские или другие иностранные слова!
-                JSON ONLY: {{'adv': 'текст лайфхака', 'cats': [ {{'id': 'id', 'n': 'название отеля', 'cat': 'ОТЕЛЬ', 'd': 'описание отеля'}} ]}}
+                JSON ONLY: {{"adv": "текст", "cats": [ {{"id": "id", "n": "название", "cat": "ОТЕЛЬ", "d": "описание"}} ]}}
                 """
                 g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                     json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
-                new_data = json.loads(g_res.json()['choices'][0]['message']['content'])
                 
-                last_adv = new_data.get('adv', '')
-                for h in new_data['cats']:
-                    h['advice'] = last_adv
-                    full_list.insert(0, h)
-                
-                if redis_db:
-                    redis_db.set(db_key, json.dumps(full_list))
-                    redis_db.set(lock_key, "1", ex=86400)
+                try:
+                    new_data = json.loads(g_res.json()['choices'][0]['message']['content'])
+                    last_adv = new_data.get('adv', '')
+                    raw_cats = new_data.get('cats', [])
+                    
+                    # --- ГЛАВНАЯ БРОНЯ ОТ ГАЛЛЮЦИНАЦИЙ ИИ ---
+                    if isinstance(raw_cats, dict): 
+                        raw_cats = [raw_cats]
+                    elif isinstance(raw_cats, str):
+                        try: raw_cats = json.loads(raw_cats)
+                        except: raw_cats = []
+                        if isinstance(raw_cats, dict): raw_cats = [raw_cats]
+
+                    for h in raw_cats:
+                        if isinstance(h, dict): # Проверяем, что это точно словарь, а не буква
+                            h['advice'] = last_adv
+                            full_list.insert(0, h)
+                    
+                    if redis_db and full_list:
+                        redis_db.set(db_key, json.dumps(full_list))
+                        redis_db.set(lock_key, "1", ex=86400)
+                except Exception as parse_e:
+                    print(f"JSON Parse Error: {parse_e}")
 
         if not full_list: return JSONResponse(content={"reply": "Отели не найдены. Проверьте правильность написания города."})
 
@@ -127,7 +146,8 @@ async def handle_chat(payload: ChatPayload):
         """
         
         for h in to_show:
-            link = f"https://www.stay22.com/allez/booking/{h['id']}?aid={STAY22_AID}"
+            if not isinstance(h, dict): continue
+            link = f"https://www.stay22.com/allez/booking/{h.get('id', '')}?aid={STAY22_AID}"
             html += f"""
             <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 15px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 15px; box-sizing: border-box;">
                 <div style="flex: 1; min-width: 280px; box-sizing: border-box;">
@@ -135,8 +155,8 @@ async def handle_chat(payload: ChatPayload):
                         <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'ОТЕЛЬ')}</span>
                         <span style="color: #008009; font-size: 12px; font-weight: 700;">✓ Проверено</span>
                     </div>
-                    <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h['n']}</div>
-                    <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h['d']}</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h.get('n', 'Отель')}</div>
+                    <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h.get('d', '')}</div>
                 </div>
                 <div style="text-align: right; min-width: 150px; box-sizing: border-box;">
                     <a href="{link}" target="_blank" style="background: #006ce4; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 14px; font-weight: 600; display: inline-block; text-align: center; width: 100%; box-sizing: border-box;">Показать цены</a>
@@ -144,7 +164,7 @@ async def handle_chat(payload: ChatPayload):
             </div>
             """
         
-        if to_show[0].get('advice'):
+        if len(to_show) > 0 and isinstance(to_show[0], dict) and to_show[0].get('advice'):
             html += f"""
             <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 20px 0; display: flex; align-items: center; gap: 15px; box-sizing: border-box;">
                 <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: bold;">i</div>
@@ -165,5 +185,4 @@ async def handle_chat(payload: ChatPayload):
         return JSONResponse(content={"reply": html})
     except Exception as e:
         print(f"Error: {e}")
-        # Теперь, если что-то сломается, мы увидим ТОЧНУЮ техническую причину!
         return JSONResponse(content={"reply": f"Техническая ошибка: {str(e)}"})
