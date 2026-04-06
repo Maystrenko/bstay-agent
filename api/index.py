@@ -64,33 +64,40 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     try:
-        p_city = f"Extract city name in English from: '{msg}'. Respond ONLY with city name."
+        # ИСПРАВЛЕНИЕ 1: Умный поиск города (с защитой от стран и слова None)
+        p_city = f"Extract the specific city name in English from: '{msg}'. If it is a country, return the capital city. Respond ONLY with the city name, nothing else."
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
-        city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
+        city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "").lower()
+        
+        # Защита: если ИИ вернул чушь или None
+        if not city_en or "none" in city_en or len(city_en) < 2:
+            return JSONResponse(content={"reply": "Пожалуйста, укажите конкретный город, например: Париж или Токио."})
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
-        db_key = f"v7:booking:{city_en.lower()}:{intent}"
-        lock_key = f"lock:{city_en.lower()}:{intent}"
+        
+        # ИСПРАВЛЕНИЕ 2: Меняем версию ключа на v8, чтобы забыть сломанные отели-налоги!
+        db_key = f"v8:booking:{city_en}:{intent}"
+        lock_key = f"lock:v8:{city_en}:{intent}"
 
         full_list = []
         if redis_db:
             raw = redis_db.get(db_key)
             full_list = json.loads(raw) if raw else []
 
-        # Обновление раз в сутки с УЛУЧШЕННЫМ ЭКСПЕРТНЫМ СОВЕТОМ
+        # Обновление раз в сутки
         if redis_db and not redis_db.get(lock_key):
             existing_ids = [item['id'] for item in full_list]
             new_items = get_new_hotels(city_en, intent, existing_ids)
 
             if new_items:
-                # МАКСИМАЛЬНО ПОЛЕЗНЫЙ ПРОМПТ ДЛЯ СОВЕТОВ
+                # ИСПРАВЛЕНИЕ 3: Жестко разделяем отели и советы
                 g_prompt = f"""
-                Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. 
-                В поле 'adv' дай ОДИН КОНКРЕТНЫЙ лайфхак для туриста в {city_en}. 
-                НЕ ПИШИ про отели. Пиши про: выгодные проездные, налоги в чеках, как избежать очередей или бесплатные дни в музеях. 
-                Будь краток и дай реальную пользу. 
-                JSON ONLY: {{'adv': 'текст совета', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}
+                У меня есть данные о 3 отелях в городе {city_en}: {json.dumps(new_items)}.
+                Твоя задача — вернуть валидный JSON.
+                ПРАВИЛО 1: В массив 'cats' СТРОГО скопируй данные этих отелей (id, название), а в 'd' напиши краткое описание отеля на русском.
+                ПРАВИЛО 2: В поле 'adv' напиши ОДИН лайфхак для туриста в этом городе (про транспорт, еду или локальные правила). В поле 'adv' не упоминай отели.
+                JSON ONLY: {{'adv': 'текст лайфхака', 'cats': [ {{'id': 'id', 'n': 'название отеля', 'cat': 'ОТЕЛЬ', 'd': 'описание отеля'}} ]}}
                 """
                 g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                     json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
@@ -105,14 +112,13 @@ async def handle_chat(payload: ChatPayload):
                     redis_db.set(db_key, json.dumps(full_list))
                     redis_db.set(lock_key, "1", ex=86400)
 
-        if not full_list: return JSONResponse(content={"reply": "Отели не найдены."})
+        if not full_list: return JSONResponse(content={"reply": "Отели не найдены. Проверьте название города."})
 
-        # --- ЛОГИКА ОТОБРАЖЕНИЯ 5 ОТЕЛЕЙ ---
+        # --- ЛОГИКА ОТОБРАЖЕНИЯ 5 ОТЕЛЕЙ (Твой оригинальный код) ---
         display_limit = 5
         to_show = full_list[:display_limit]
         hidden_count = len(full_list) - display_limit
 
-        # ТУТ НИКАКИХ СКРОЛЛОВ, ВЕСЬ КОНТЕНТ ИДЕТ ВНИЗ
         html = f"""
         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: #f5f5f5; padding: 20px 0;">
             <div style="max-width: 1000px; margin: 0 auto; padding: 0 15px;">
@@ -157,5 +163,6 @@ async def handle_chat(payload: ChatPayload):
         
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
-    except:
+    except Exception as e:
+        print(f"Error: {e}")
         return JSONResponse(content={"reply": "Ошибка. Попробуйте еще раз."})
