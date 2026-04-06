@@ -25,7 +25,7 @@ STAY22_AID = "btr"
 
 class ChatPayload(BaseModel):
     message: str
-    lang: str = "en" # Теперь принимаем язык от фронтенда!
+    lang: str = "en" 
 
 def get_new_hotels(city_en, intent, existing_ids):
     try:
@@ -59,41 +59,38 @@ def get_new_hotels(city_en, intent, existing_ids):
 @app.post("/api/chat")
 async def handle_chat(payload: ChatPayload):
     msg = payload.message.strip().lower()
-    user_lang = payload.lang.lower()[:2] # Берем код языка (ru, es, de...)
+    user_lang = payload.lang.lower()[:2]
     
     g_key = random.choice(groq_keys)
     headers = {"Authorization": f"Bearer {g_key}"}
 
-    # МУЛЬТИЯЗЫЧНЫЕ КНОПКИ И ОШИБКИ ДЛЯ 10 ЯЗЫКОВ
     UI_LANGS = {
-        'ru': {'err_country': "Вы указали целую страну 🌍. Пожалуйста, уточните <b>город</b>.", 'err_city': "Пожалуйста, укажите конкретный город.", 'not_found': "Отели не найдены.", 'found': "вариантов найдено", 'hotel': "ОТЕЛЬ", 'verified': "✓ Проверено", 'show_prices': "Показать цены", 'advice_title': "💡 Совет эксперта по", 'show_more': "Показать ещё", 'hotels_more': "отелей →", 'show_all': "Найти все варианты на карте →"},
-        'en': {'err_country': "You specified a whole country 🌍. Please specify a <b>city</b>.", 'err_city': "Please specify a specific city.", 'not_found': "No hotels found.", 'found': "options found", 'hotel': "HOTEL", 'verified': "✓ Verified", 'show_prices': "Show prices", 'advice_title': "💡 Expert advice for", 'show_more': "Show", 'hotels_more': "more hotels →", 'show_all': "Find all options on map →"},
-        'es': {'err_country': "Especificaste un país entero 🌍. Por favor, especifica una <b>ciudad</b>.", 'err_city': "Por favor, especifica una ciudad.", 'not_found': "No se encontraron hoteles.", 'found': "opciones encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver precios", 'advice_title': "💡 Consejo de experto para", 'show_more': "Mostrar", 'hotels_more': "hoteles más →", 'show_all': "Ver todas las opciones en el mapa →"},
-        'de': {'err_country': "Sie haben ein ganzes Land angegeben 🌍. Bitte geben Sie eine <b>Stadt</b> an.", 'err_city': "Bitte geben Sie eine bestimmte Stadt an.", 'not_found': "Keine Hotels gefunden.", 'found': "Optionen gefunden", 'hotel': "HOTEL", 'verified': "✓ Überprüft", 'show_prices': "Preise anzeigen", 'advice_title': "💡 Expertentipp für", 'show_more': "Zeige", 'hotels_more': "weitere Hotels →", 'show_all': "Alle Optionen auf der Karte finden →"},
-        'fr': {'err_country': "Vous avez indiqué un pays entier 🌍. Veuillez préciser une <b>ville</b>.", 'err_city': "Veuillez préciser une ville.", 'not_found': "Aucun hôtel trouvé.", 'found': "options trouvées", 'hotel': "HÔTEL", 'verified': "✓ Vérifié", 'show_prices': "Voir les prix", 'advice_title': "💡 Conseil d'expert pour", 'show_more': "Afficher", 'hotels_more': "hôtels de plus →", 'show_all': "Trouver toutes les options sur la carte →"},
-        'it': {'err_country': "Hai indicato un intero paese 🌍. Specifica una <b>città</b>.", 'err_city': "Specifica una città.", 'not_found': "Nessun hotel trovato.", 'found': "opzioni trovate", 'hotel': "HOTEL", 'verified': "✓ Verificato", 'show_prices': "Mostra prezzi", 'advice_title': "💡 Consiglio dell'esperto per", 'show_more': "Mostra altri", 'hotels_more': "hotel →", 'show_all': "Trova tutte le opzioni sulla mappa →"},
-        'pt': {'err_country': "Você indicou um país inteiro 🌍. Por favor, especifique uma <b>cidade</b>.", 'err_city': "Por favor, especifique uma cidade.", 'not_found': "Nenhum hotel encontrado.", 'found': "opções encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver preços", 'advice_title': "💡 Dica de especialista para", 'show_more': "Mostrar mais", 'hotels_more': "hotéis →", 'show_all': "Ver todas as opções no mapa →"},
-        'tr': {'err_country': "Bütün bir ülkeyi belirttiniz 🌍. Lütfen bir <b>şehir</b> belirtin.", 'err_city': "Lütfen belirli bir şehir belirtin.", 'not_found': "Otel bulunamadı.", 'found': "seçenek bulundu", 'hotel': "OTEL", 'verified': "✓ Doğrulandı", 'show_prices': "Fiyatları göster", 'advice_title': "💡 Uzman tavsiyesi:", 'show_more': "Daha fazla", 'hotels_more': "otel göster →", 'show_all': "Haritadaki tüm seçenekleri bul →"},
-        'zh': {'err_country': "您输入了整个国家 🌍。请指定一个<b>城市</b>。", 'err_city': "请指定一个具体城市。", 'not_found': "未找到酒店。", 'found': "个选项", 'hotel': "酒店", 'verified': "✓ 已验证", 'show_prices': "查看价格", 'advice_title': "💡 专家建议", 'show_more': "显示更多", 'hotels_more': "家酒店 →", 'show_all': "在地图上查找所有选项 →"},
-        'ja': {'err_country': "国全体が指定されています🌍。<b>都市</b>を指定してください。", 'err_city': "特定の都市を指定してください。", 'not_found': "ホテルが見つかりません。", 'found': "件のオプション", 'hotel': "ホテル", 'verified': "✓ 確認済み", 'show_prices': "価格を見る", 'advice_title': "💡 専門家のアドバイス", 'show_more': "さらに", 'hotels_more': "件のホテルを表示 →", 'show_all': "地図上ですべてのオプションを見つける →"}
+        'ru': {'err_city': "Пожалуйста, укажите конкретный город.", 'not_found': "Отели не найдены.", 'found': "вариантов найдено", 'hotel': "ОТЕЛЬ", 'verified': "✓ Проверено", 'show_prices': "Показать цены", 'advice_title': "💡 Совет эксперта по", 'show_more': "Показать ещё", 'hotels_more': "отелей →", 'show_all': "Найти все варианты на карте →"},
+        'en': {'err_city': "Please specify a specific city.", 'not_found': "No hotels found.", 'found': "options found", 'hotel': "HOTEL", 'verified': "✓ Verified", 'show_prices': "Show prices", 'advice_title': "💡 Expert advice for", 'show_more': "Show", 'hotels_more': "more hotels →", 'show_all': "Find all options on map →"},
+        'es': {'err_city': "Por favor, especifica una ciudad.", 'not_found': "No se encontraron hoteles.", 'found': "opciones encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver precios", 'advice_title': "💡 Consejo de experto para", 'show_more': "Mostrar", 'hotels_more': "hoteles más →", 'show_all': "Ver todas las opciones en el mapa →"},
+        'de': {'err_city': "Bitte geben Sie eine bestimmte Stadt an.", 'not_found': "Keine Hotels gefunden.", 'found': "Optionen gefunden", 'hotel': "HOTEL", 'verified': "✓ Überprüft", 'show_prices': "Preise anzeigen", 'advice_title': "💡 Expertentipp für", 'show_more': "Zeige", 'hotels_more': "weitere Hotels →", 'show_all': "Alle Optionen auf der Karte finden →"},
+        'fr': {'err_city': "Veuillez préciser une ville.", 'not_found': "Aucun hôtel trouvé.", 'found': "options trouvées", 'hotel': "HÔTEL", 'verified': "✓ Vérifié", 'show_prices': "Voir les prix", 'advice_title': "💡 Conseil d'expert pour", 'show_more': "Afficher", 'hotels_more': "hôtels de plus →", 'show_all': "Trouver toutes les options sur la carte →"},
+        'it': {'err_city': "Specifica una città.", 'not_found': "Nessun hotel trovato.", 'found': "opzioni trovate", 'hotel': "HOTEL", 'verified': "✓ Verificato", 'show_prices': "Mostra prezzi", 'advice_title': "💡 Consiglio dell'esperto per", 'show_more': "Mostra altri", 'hotels_more': "hotel →", 'show_all': "Trova tutte le opzioni sulla mappa →"},
+        'pt': {'err_city': "Por favor, especifique uma cidade.", 'not_found': "Nenhum hotel encontrado.", 'found': "opções encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver preços", 'advice_title': "💡 Dica de especialista para", 'show_more': "Mostrar mais", 'hotels_more': "hotéis →", 'show_all': "Ver todas as opções no mapa →"},
+        'tr': {'err_city': "Lütfen belirli bir şehir belirtin.", 'not_found': "Otel bulunamadı.", 'found': "seçenek bulundu", 'hotel': "OTEL", 'verified': "✓ Doğrulandı", 'show_prices': "Fiyatları göster", 'advice_title': "💡 Uzman tavsiyesi:", 'show_more': "Daha fazla", 'hotels_more': "otel göster →", 'show_all': "Haritadaki tüm seçenekleri bul →"},
+        'zh': {'err_city': "请指定一个具体城市。", 'not_found': "未找到酒店。", 'found': "个选项", 'hotel': "酒店", 'verified': "✓ 已验证", 'show_prices': "查看价格", 'advice_title': "💡 专家建议", 'show_more': "显示更多", 'hotels_more': "家酒店 →", 'show_all': "在地图上查找所有选项 →"},
+        'ja': {'err_city': "特定の都市を指定してください。", 'not_found': "ホテルが見つかりません。", 'found': "件のオプション", 'hotel': "ホテル", 'verified': "✓ 確認済み", 'show_prices': "価格を見る", 'advice_title': "💡 専門家のアドバイス", 'show_more': "さらに", 'hotels_more': "件のホテルを表示 →", 'show_all': "地図上ですべてのオプションを見つける →"}
     }
-    # Берем словарь для нужного языка. Если язык редкий (например, Хинди), по умолчанию будет Английский
     t = UI_LANGS.get(user_lang, UI_LANGS['en'])
 
     try:
-        p_city = f"Analyze the location in this text: '{msg}'. If it is a COUNTRY, respond ONLY with the word 'COUNTRY'. If it is a CITY, respond ONLY with the city name in English. Nothing else."
+        # ВОЗВРАЩЕНО ПРАВИЛО: "Если это страна, верни её столицу"
+        p_city = f"Extract the specific city name in English from: '{msg}'. If it is a country, return its capital city. Respond ONLY with the city name, nothing else."
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "").lower()
         
-        if city_en == "country": return JSONResponse(content={"reply": t['err_country']})
         if not city_en or "none" in city_en or len(city_en) < 2: return JSONResponse(content={"reply": t['err_city']})
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж", "cheap", "barato", "billig"]) else "general"
         
-        # v14: Кэш теперь разделяется по языкам!
-        db_key = f"v14:booking:{city_en}:{intent}:{user_lang}"
-        lock_key = f"lock:v14:{city_en}:{intent}:{user_lang}"
+        db_key = f"v15:booking:{city_en}:{intent}:{user_lang}"
+        lock_key = f"lock:v15:{city_en}:{intent}:{user_lang}"
 
         full_list = []
         if redis_db:
@@ -108,7 +105,6 @@ async def handle_chat(payload: ChatPayload):
             new_items = get_new_hotels(city_en, intent, existing_ids)
 
             if new_items:
-                # КОМАНДА ДЛЯ НЕЙРОСЕТИ: ПИСАТЬ НА ЯЗЫКЕ ПОЛЬЗОВАТЕЛЯ
                 g_prompt = f"""
                 I have data about 3 hotels in {city_en}: {json.dumps(new_items)}.
                 Your task is to return a valid JSON.
@@ -143,7 +139,6 @@ async def handle_chat(payload: ChatPayload):
 
         if not full_list: return JSONResponse(content={"reply": t['not_found']})
 
-        # --- ЛОГИКА ОТОБРАЖЕНИЯ ---
         display_limit = 5
         to_show = full_list[:display_limit]
         hidden_count = len(full_list) - display_limit
