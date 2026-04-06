@@ -3,7 +3,6 @@ import json
 import urllib.parse
 import random
 import requests
-import base64
 from datetime import datetime, timedelta
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,11 +28,6 @@ STAY22_AID = "bstay24"
 
 class ChatPayload(BaseModel):
     message: str
-
-def get_flag_emoji(country_code):
-    """Надежный Emoji-флаг как основной вариант"""
-    if not country_code or country_code == "un": return "🌍"
-    return "".join(chr(127397 + ord(c)) for c in country_code.upper())
 
 def get_new_hotels(city_en, intent, existing_ids):
     try:
@@ -78,7 +72,7 @@ async def handle_chat(payload: ChatPayload):
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
-        db_key = f"v13:booking:{city_en.lower()}:{intent}"
+        db_key = f"v14:booking:{city_en.lower()}:{intent}"
 
         full_list = []
         country_code = "gb"
@@ -111,20 +105,21 @@ async def handle_chat(payload: ChatPayload):
 
         to_show = full_list[:10]
         hidden_count = len(full_list) - 10
-        # Используем Emoji-флаг (самый быстрый и надежный)
-        flag_icon = get_flag_emoji(country_code)
+        
+        # --- ССЫЛКА НА ГУГЛ-ФЛАГ (Самый надежный вариант) ---
+        flag_url = f"https://www.google.com/images/flags/{country_code.lower()}.png"
 
         html = f"""
         <style>
-            @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(5px); }} to {{ opacity: 1; transform: translateY(0); }} }}
-            .b-container {{ animation: fadeIn 0.3s ease-in-out; width: 100%; font-family: 'Segoe UI', Tahoma, sans-serif; background: #f5f5f5; }}
-            .b-header {{ padding: 20px; background: #fff; border-bottom: 1px solid #e7e7e7; min-height: 80px; box-sizing: border-box; }}
-            .b-card {{ background: #fff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px; }}
+            @keyframes fadeInBody {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+            .b-main {{ animation: fadeInBody 0.4s ease-in; width: 100%; font-family: 'Segoe UI', Tahoma, sans-serif; background: #f5f5f5; }}
+            .b-head {{ background: #fff; border-bottom: 1px solid #e7e7e7; padding: 20px; min-height: 85px; box-sizing: border-box; }}
+            .b-card {{ background: #fff; border: 1px solid #e7e7e7; border-radius: 4px; padding: 20px; margin-bottom: 10px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px; }}
         </style>
-        <div class="b-container">
-            <div class="b-header">
+        <div class="b-main">
+            <div class="b-head">
                 <div style="display: flex; align-items: center; gap: 15px;">
-                    <span style="font-size: 35px; line-height: 1;">{flag_icon}</span>
+                    <img src="{flag_url}" style="width: 32px; height: auto; border-radius: 2px; border: 1px solid #eee;">
                     <h2 style="font-size: 24px; color: #003580; margin: 0; font-weight: 700;">{city_en.capitalize()}: {len(full_list)} вариантов</h2>
                 </div>
             </div>
@@ -136,24 +131,23 @@ async def handle_chat(payload: ChatPayload):
             html += f"""
             <div class="b-card">
                 <div style="flex: 1; min-width: 280px;">
-                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                        <span style="background: #003580; color: #fff; font-size: 10px; font-weight: 800; padding: 3px 10px; border-radius: 4px;">{h.get('cat', 'ОТЕЛЬ')}</span>
-                        <span style="color: #008009; font-size: 12px; font-weight: 700;">● Свободно</span>
+                    <div style="margin-bottom: 8px;">
+                        <span style="background: #003580; color: #fff; font-size: 10px; font-weight: 800; padding: 3px 8px; border-radius: 3px;">{h.get('cat', 'ОТЕЛЬ')}</span>
                     </div>
                     <div style="font-size: 19px; font-weight: 700; color: #006ce4; margin-bottom: 5px;">{h['n']}</div>
                     <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h['d']}</div>
                 </div>
-                <div style="text-align: right; min-width: 160px;">
-                    <a href="{link}" target="_blank" style="background: #006ce4; color: #fff; text-decoration: none; padding: 12px 28px; border-radius: 4px; font-size: 14px; font-weight: 700; display: inline-block;">Выбрать номер</a>
+                <div style="text-align: right;">
+                    <a href="{link}" target="_blank" style="background: #006ce4; color: #fff; text-decoration: none; padding: 12px 30px; border-radius: 4px; font-size: 14px; font-weight: 700; display: inline-block;">Выбрать номер</a>
                 </div>
             </div>
             """
         
         if to_show[0].get('advice'):
             html += f"""
-            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 18px; margin: 15px 0; display: flex; gap: 15px; align-items: center;">
-                <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: 900;">!</div>
-                <div style="font-size: 14px; color: #003580;"><b>Важная информация:</b> {to_show[0]['advice']}</div>
+            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 4px; padding: 18px; margin: 20px 0; display: flex; gap: 15px; align-items: center;">
+                <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: 900;">i</div>
+                <div style="font-size: 14px; color: #003580; line-height: 1.4;"><b>Важная информация:</b> {to_show[0]['advice']}</div>
             </div>"""
 
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
@@ -163,4 +157,4 @@ async def handle_chat(payload: ChatPayload):
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
     except:
-        return JSONResponse(content={"reply": "Ошибка. Попробуйте еще раз."})
+        return JSONResponse(content={"reply": "Попробуйте обновить запрос."})
