@@ -24,7 +24,7 @@ except Exception as e:
 
 groq_keys = [k.strip() for k in os.environ.get("GROQ_API_KEY", "").split(",") if k.strip()]
 RAPID_API_KEY = os.environ.get("RAPID_API_KEY")
-STAY22_AID = "bstay24"
+STAY22_AID = "btr"
 
 class ChatPayload(BaseModel):
     message: str
