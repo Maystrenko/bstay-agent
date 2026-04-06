@@ -78,13 +78,20 @@ async def handle_chat(payload: ChatPayload):
             raw = redis_db.get(db_key)
             full_list = json.loads(raw) if raw else []
 
-        # Обновление раз в сутки
+        # Обновление раз в сутки с УЛУЧШЕННЫМ ЭКСПЕРТНЫМ СОВЕТОМ
         if redis_db and not redis_db.get(lock_key):
             existing_ids = [item['id'] for item in full_list]
             new_items = get_new_hotels(city_en, intent, existing_ids)
 
             if new_items:
-                g_prompt = f"Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. JSON ONLY: {{'adv': 'совет', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}"
+                # МАКСИМАЛЬНО ПОЛЕЗНЫЙ ПРОМПТ ДЛЯ СОВЕТОВ
+                g_prompt = f"""
+                Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. 
+                В поле 'adv' дай ОДИН КОНКРЕТНЫЙ лайфхак для туриста в {city_en}. 
+                НЕ ПИШИ про отели. Пиши про: выгодные проездные, налоги в чеках, как избежать очередей или бесплатные дни в музеях. 
+                Будь краток и дай реальную пользу. 
+                JSON ONLY: {{'adv': 'текст совета', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}
+                """
                 g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                     json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
                 new_data = json.loads(g_res.json()['choices'][0]['message']['content'])
@@ -105,6 +112,7 @@ async def handle_chat(payload: ChatPayload):
         to_show = full_list[:display_limit]
         hidden_count = len(full_list) - display_limit
 
+        # ТУТ НИКАКИХ СКРОЛЛОВ, ВЕСЬ КОНТЕНТ ИДЕТ ВНИЗ
         html = f"""
         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: #f5f5f5; padding: 20px 0;">
             <div style="max-width: 1000px; margin: 0 auto; padding: 0 15px;">
@@ -129,15 +137,15 @@ async def handle_chat(payload: ChatPayload):
             </div>
             """
         
+        # Блок экспертного совета
         if to_show[0].get('advice'):
             html += f"""
             <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 20px 0; display: flex; align-items: center; gap: 15px;">
                 <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: bold;">i</div>
-                <div style="font-size: 14px; color: #003580;"><b>Совет туристам:</b> {to_show[0]['advice']}</div>
+                <div style="font-size: 14px; color: #003580; line-height: 1.5;"><b>💡 Совет эксперта по {city_en.capitalize()}:</b> {to_show[0]['advice']}</div>
             </div>"""
 
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
-        # Кнопка меняется в зависимости от того, есть ли скрытые отели в базе
         if hidden_count > 0:
             btn_label = f"Показать ещё {hidden_count} отелей →"
             btn_style = "background: #ffffff; color: #006ce4; border: 1px solid #006ce4;"
