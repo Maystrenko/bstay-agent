@@ -64,21 +64,20 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     try:
-        # ИСПРАВЛЕНИЕ 1: Умный поиск города (с защитой от стран и слова None)
+        # Умный поиск города (с защитой от стран и слова None)
         p_city = f"Extract the specific city name in English from: '{msg}'. If it is a country, return the capital city. Respond ONLY with the city name, nothing else."
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": p_city}]}, timeout=7)
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "").lower()
         
-        # Защита: если ИИ вернул чушь или None
         if not city_en or "none" in city_en or len(city_en) < 2:
             return JSONResponse(content={"reply": "Пожалуйста, укажите конкретный город, например: Париж или Токио."})
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
         
-        # ИСПРАВЛЕНИЕ 2: Меняем версию ключа на v8, чтобы забыть сломанные отели-налоги!
-        db_key = f"v8:booking:{city_en}:{intent}"
-        lock_key = f"lock:v8:{city_en}:{intent}"
+        # Меняем версию ключа на v9, чтобы сбросить иероглифы
+        db_key = f"v9:booking:{city_en}:{intent}"
+        lock_key = f"lock:v9:{city_en}:{intent}"
 
         full_list = []
         if redis_db:
@@ -91,12 +90,13 @@ async def handle_chat(payload: ChatPayload):
             new_items = get_new_hotels(city_en, intent, existing_ids)
 
             if new_items:
-                # ИСПРАВЛЕНИЕ 3: Жестко разделяем отели и советы
+                # ИСПРАВЛЕНИЕ: Жестко требуем ТОЛЬКО русский язык
                 g_prompt = f"""
                 У меня есть данные о 3 отелях в городе {city_en}: {json.dumps(new_items)}.
                 Твоя задача — вернуть валидный JSON.
-                ПРАВИЛО 1: В массив 'cats' СТРОГО скопируй данные этих отелей (id, название), а в 'd' напиши краткое описание отеля на русском.
-                ПРАВИЛО 2: В поле 'adv' напиши ОДИН лайфхак для туриста в этом городе (про транспорт, еду или локальные правила). В поле 'adv' не упоминай отели.
+                ПРАВИЛО 1: В массив 'cats' скопируй данные отелей (id, название), а в 'd' напиши краткое описание.
+                ПРАВИЛО 2: В поле 'adv' напиши ОДИН лайфхак для туриста.
+                СУПЕР-ПРАВИЛО: Весь сгенерированный текст должен быть СТРОГО НА ЧИСТОМ РУССКОМ ЯЗЫКЕ. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать китайские иероглифы, вьетнамские или любые другие иностранные слова!
                 JSON ONLY: {{'adv': 'текст лайфхака', 'cats': [ {{'id': 'id', 'n': 'название отеля', 'cat': 'ОТЕЛЬ', 'd': 'описание отеля'}} ]}}
                 """
                 g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
@@ -114,7 +114,7 @@ async def handle_chat(payload: ChatPayload):
 
         if not full_list: return JSONResponse(content={"reply": "Отели не найдены. Проверьте название города."})
 
-        # --- ЛОГИКА ОТОБРАЖЕНИЯ 5 ОТЕЛЕЙ (Твой оригинальный код) ---
+        # --- ЛОГИКА ОТОБРАЖЕНИЯ ---
         display_limit = 5
         to_show = full_list[:display_limit]
         hidden_count = len(full_list) - display_limit
