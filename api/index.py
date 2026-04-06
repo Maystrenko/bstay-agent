@@ -72,7 +72,7 @@ async def handle_chat(payload: ChatPayload):
         city_en = c_res.json()['choices'][0]['message']['content'].strip().replace(".", "")
         
         intent = "cheap" if any(x in msg for x in ["деш", "low", "бюдж"]) else "general"
-        db_key = f"v14:booking:{city_en.lower()}:{intent}"
+        db_key = f"v15:booking:{city_en.lower()}:{intent}"
 
         full_list = []
         country_code = "gb"
@@ -106,20 +106,19 @@ async def handle_chat(payload: ChatPayload):
         to_show = full_list[:10]
         hidden_count = len(full_list) - 10
         
-        # --- ССЫЛКА НА ГУГЛ-ФЛАГ (Самый надежный вариант) ---
-        flag_url = f"https://www.google.com/images/flags/{country_code.lower()}.png"
-
+        # Заглушка флага через Emoji (для подстраховки) + иконка локации
         html = f"""
         <style>
-            @keyframes fadeInBody {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
-            .b-main {{ animation: fadeInBody 0.4s ease-in; width: 100%; font-family: 'Segoe UI', Tahoma, sans-serif; background: #f5f5f5; }}
-            .b-head {{ background: #fff; border-bottom: 1px solid #e7e7e7; padding: 20px; min-height: 85px; box-sizing: border-box; }}
+            @keyframes fadeIn {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
+            .b-ui {{ animation: fadeIn 0.4s ease-in; width: 100%; font-family: 'Segoe UI', Tahoma, sans-serif; background: #f5f5f5; }}
+            .b-header {{ background: #fff; border-bottom: 1px solid #e7e7e7; padding: 20px; min-height: 85px; display: flex; align-items: center; box-sizing: border-box; }}
             .b-card {{ background: #fff; border: 1px solid #e7e7e7; border-radius: 4px; padding: 20px; margin-bottom: 10px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px; }}
+            .flag-box {{ width: 32px; height: 22px; background: #003580; color: #fff; font-size: 10px; font-weight: bold; display: flex; align-items: center; justify-content: center; border-radius: 2px; text-transform: uppercase; }}
         </style>
-        <div class="b-main">
-            <div class="b-head">
+        <div class="b-ui">
+            <div class="b-header">
                 <div style="display: flex; align-items: center; gap: 15px;">
-                    <img src="{flag_url}" style="width: 32px; height: auto; border-radius: 2px; border: 1px solid #eee;">
+                    <div class="flag-box">{country_code[:2]}</div>
                     <h2 style="font-size: 24px; color: #003580; margin: 0; font-weight: 700;">{city_en.capitalize()}: {len(full_list)} вариантов</h2>
                 </div>
             </div>
@@ -157,4 +156,4 @@ async def handle_chat(payload: ChatPayload):
         html += "</div></div>"
         return JSONResponse(content={"reply": html})
     except:
-        return JSONResponse(content={"reply": "Попробуйте обновить запрос."})
+        return JSONResponse(content={"reply": "Попробуйте еще раз."})
