@@ -78,7 +78,7 @@ async def handle_chat(payload: ChatPayload):
             raw = redis_db.get(db_key)
             full_list = json.loads(raw) if raw else []
 
-        # Обновление раз в сутки с УЛУЧШЕННЫМ промптом для советов
+        # Обновление раз в сутки с УЛУЧШЕННЫМ промптом для РЕАЛЬНЫХ советов
         if redis_db and not redis_db.get(lock_key):
             existing_ids = [item['id'] for item in full_list]
             new_items = get_new_hotels(city_en, intent, existing_ids)
@@ -87,8 +87,9 @@ async def handle_chat(payload: ChatPayload):
                 g_prompt = f"""
                 Напиши на русском гид по 3 отелям в {city_en}: {json.dumps(new_items)}. 
                 В поле 'adv' дай ОДИН РЕАЛЬНО ПОЛЕЗНЫЙ совет для туриста в {city_en}. 
-                Пиши про конкретику: выгодные проездные, налоги в отелях, как избежать очередей или где поесть 'как местный'. 
-                Никакой воды. JSON ONLY: {{'adv': 'текст совета', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}
+                Пиши про конкретные лайфхаки: выгодные проездные, налоги в отелях, как обойти очереди 
+                или где найти лучшую локальную еду. Без общих фраз. 
+                JSON ONLY: {{'adv': 'текст совета', 'cats': [ {{'id': 'id', 'n': 'название', 'cat': 'тип', 'd': 'описание'}} ]}}
                 """
                 g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                     json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=15)
@@ -105,10 +106,8 @@ async def handle_chat(payload: ChatPayload):
 
         if not full_list: return JSONResponse(content={"reply": "Отели не найдены."})
 
-        # --- ЛОГИКА ОТОБРАЖЕНИЯ 5 ОТЕЛЕЙ ---
-        display_limit = 5
-        to_show = full_list[:display_limit]
-        hidden_count = len(full_list) - display_limit
+        to_show = full_list[:5]
+        hidden_count = len(full_list) - 5
 
         html = f"""
         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: #f5f5f5; padding: 20px 0;">
@@ -122,7 +121,7 @@ async def handle_chat(payload: ChatPayload):
             <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 20px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 20px;">
                 <div style="flex: 1; min-width: 280px;">
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                        <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'Рекомендуем')}</span>
+                        <span style="background: #003580; color: #fff; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', 'Рекомендуем')}</span>
                         <span style="color: #008009; font-size: 12px; font-weight: 700;">✓ Проверено</span>
                     </div>
                     <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h['n']}</div>
@@ -134,21 +133,21 @@ async def handle_chat(payload: ChatPayload):
             </div>
             """
         
-        # Блок экспертного совета
+        # --- БЛОК СОВЕТА (СТИЛЬ image_99662b.png) ---
         if to_show[0].get('advice'):
             html += f"""
-            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 18px; margin: 20px 0; display: flex; align-items: center; gap: 15px;">
-                <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: bold;">i</div>
-                <div style="font-size: 14px; color: #003580; line-height: 1.5;"><b>💡 Совет эксперта по {city_en.capitalize()}:</b> {to_show[0]['advice']}</div>
+            <div style="background: #ebf3ff; border: 1px solid #003580; border-radius: 8px; padding: 16px; margin: 20px 0; display: flex; align-items: center; gap: 15px;">
+                <div style="background: #003580; color: #fff; border-radius: 50%; min-width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: bold;">i</div>
+                <div style="font-size: 14px; color: #003580; line-height: 1.5;">
+                    <b>💡 Совет эксперта по {city_en.capitalize()}:</b> {to_show[0]['advice']}
+                </div>
             </div>"""
 
         all_link = f"https://www.stay22.com/allez/{STAY22_AID}?address={urllib.parse.quote(city_en)}"
         if hidden_count > 0:
-            btn_label = f"Показать ещё {hidden_count} отелей →"
-            btn_style = "background: #ffffff; color: #006ce4; border: 1px solid #006ce4;"
+            btn_label, btn_style = f"Показать ещё {hidden_count} отелей →", "background: #ffffff; color: #006ce4; border: 1px solid #006ce4;"
         else:
-            btn_label = "Найти все варианты на карте →"
-            btn_style = "background: #003580; color: #ffffff; border: none;"
+            btn_label, btn_style = "Найти все варианты на карте →", "background: #003580; color: #ffffff; border: none;"
 
         html += f"<a href='{all_link}' target='_blank' style='display: block; text-align: center; padding: 16px; text-decoration: none; border-radius: 4px; font-weight: 700; font-size: 15px; {btn_style}'>{btn_label}</a>"
         
