@@ -73,11 +73,12 @@ async def handle_chat(payload: ChatPayload):
     t = UI_LANGS.get(user_lang, UI_LANGS['en'])
 
     try:
-        # АНАЛИЗАТОР
+        # АНАЛИЗАТОР С ЖЕСТКИМ ПРАВИЛОМ ДЛЯ СТОЛИЦ
         analyzer_prompt = f"""
         Analyze the user's travel query: '{msg}'. Respond ONLY with valid JSON.
+        CRITICAL RULE: If the user wrote a COUNTRY (e.g., 'Italy', 'Spain', 'Италия'), you MUST find its CAPITAL CITY (e.g., 'Rome', 'Madrid') and put it in the "city" field. Never return a country name.
         {{
-          "city": "Specific city name in English (if country, put capital city. If none, null)",
+          "city": "Specific city name in English (or capital if it is a country. If none, null)",
           "hotel": "Specific hotel name if requested (e.g. 'Rixos', 'Hilton'), else null",
           "filter": "Translate specific request to English (e.g. 'pool', 'cheap', 'center'). If no specific request, null",
           "wants_more": true if user asks for 'more', 'next', 'еще', 'другие', else false
@@ -99,11 +100,9 @@ async def handle_chat(payload: ChatPayload):
         # --- ЗАПАСНОЙ ПАРАШЮТ: ПОИСК И КЭШИРОВАНИЕ КОНКРЕТНОГО ОТЕЛЯ ---
         if hotel_name:
             query_str = f"{hotel_name} {city_en}" if city_en else hotel_name
-            # Создаем уникальный ключ для отеля, чтобы искать его в базе
             safe_query = query_str.replace(' ', '_').lower()
             hotel_db_key = f"v16:hotel:{safe_query}:{user_lang}"
             
-            # 1. ПРОВЕРЯЕМ БАЗУ (Вдруг мы уже искали этот отель?)
             if redis_db:
                 cached_hotel_raw = redis_db.get(hotel_db_key)
                 if cached_hotel_raw:
@@ -135,9 +134,8 @@ async def handle_chat(payload: ChatPayload):
                         </div>
                         """
                         return JSONResponse(content={"reply": html})
-                    except: pass # Если кэш сломался, просто идем качать заново
+                    except: pass 
 
-            # 2. ЕСЛИ В БАЗЕ НЕТ - ИДЕМ НА BOOKING
             try:
                 headers_rap = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": "booking-com18.p.rapidapi.com"}
                 l_res = requests.get("https://booking-com18.p.rapidapi.com/stays/auto-complete", headers=headers_rap, params={"query": query_str}, timeout=10)
@@ -160,7 +158,6 @@ async def handle_chat(payload: ChatPayload):
                             h_desc = json.loads(g_res.json()['choices'][0]['message']['content']).get('d', '')
                         except: h_desc = h_name
                             
-                        # 3. СОХРАНЯЕМ В БАЗУ НА БУДУЩЕЕ
                         if redis_db:
                             redis_db.set(hotel_db_key, json.dumps({"id": h_id, "name": h_name, "desc": h_desc}))
 
