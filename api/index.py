@@ -71,17 +71,14 @@ async def handle_chat(payload: ChatPayload):
         'fr': {'err_city': "Veuillez préciser une ville.", 'not_found': "Aucun hôtel trouvé.", 'found': "options trouvées", 'hotel': "HÔTEL", 'verified': "✓ Vérifié", 'show_prices': "Voir les prix", 'advice_title': "💡 Conseil pour", 'show_more': "Afficher", 'hotels_more': "plus de notre base ⬇️", 'show_all': "🗺️ Trouver toutes les options sur la carte", 'more_cmd': "Plus", 'filter_msg': "Filtré selon votre demande !", 'found_hotel': "🎯 Voici l'hôtel que vous cherchiez :"}
     }
     t = UI_LANGS.get(user_lang, UI_LANGS['en'])
-    
-    # Генерация дат для ссылок (через 30 дней от сегодня)
-    link_checkin = (datetime.now()+timedelta(days=30)).strftime('%Y-%m-%d')
-    link_checkout = (datetime.now()+timedelta(days=33)).strftime('%Y-%m-%d')
 
     try:
+        # АНАЛИЗАТОР: Ищет и фильтры, и конкретные отели
         analyzer_prompt = f"""
         Analyze the user's travel query: '{msg}'. Respond ONLY with valid JSON.
         {{
           "city": "Specific city name in English (if country, put capital city. If none, null)",
-          "hotel": "Specific hotel name if requested (e.g. 'Rixos', 'Hilton', 'The Savoy'), else null",
+          "hotel": "Specific hotel name if requested (e.g. 'Rixos', 'Hilton'), else null",
           "filter": "Translate specific request to English (e.g. 'pool', 'cheap', 'center'). If no specific request, null",
           "wants_more": true if user asks for 'more', 'next', 'еще', 'другие', else false
         }}
@@ -89,15 +86,17 @@ async def handle_chat(payload: ChatPayload):
         c_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
             json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": analyzer_prompt}], "response_format": {"type": "json_object"}}, timeout=5)
         
-        try: intent_data = json.loads(c_res.json()['choices'][0]['message']['content'])
-        except: return JSONResponse(content={"reply": t['err_city']})
+        try:
+            intent_data = json.loads(c_res.json()['choices'][0]['message']['content'])
+        except:
+            return JSONResponse(content={"reply": t['err_city']})
 
         city_en = intent_data.get('city')
         hotel_name = intent_data.get('hotel')
         user_filter = intent_data.get('filter')
         wants_more = intent_data.get('wants_more', False)
 
-        # --- ПОИСК КОНКРЕТНОГО ОТЕЛЯ (СНАЙПЕР) ---
+        # --- ЗАПАСНОЙ ПАРАШЮТ: ПОИСК КОНКРЕТНОГО ОТЕЛЯ ---
         if hotel_name:
             query_str = f"{hotel_name} {city_en}" if city_en else hotel_name
             try:
@@ -123,9 +122,8 @@ async def handle_chat(payload: ChatPayload):
                             h_desc = json.loads(g_res.json()['choices'][0]['message']['content']).get('d', '')
                         except: h_desc = h_name
                             
-                        # ПОЛНОЦЕННАЯ ССЫЛКА С ДАТАМИ И ЛЮДЬМИ
-                        b_url = f"https://www.booking.com/searchresults.html?ss={urllib.parse.quote(h_name + ' ' + (city_en or ''))}&checkin={link_checkin}&checkout={link_checkout}&group_adults=2&no_rooms=1"
-                        link = f"https://www.stay22.com/allez/{STAY22_AID}?url={urllib.parse.quote(b_url)}"
+                        # ССЫЛКА СДЕЛАНА ТОЧНО ТАК ЖЕ, КАК В РАБОЧЕМ КОДЕ ГОРОДА!
+                        link = f"https://www.stay22.com/allez/booking/{h_id}?aid={STAY22_AID}"
                         
                         html = f"""
                         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: transparent; padding: 10px 0; box-sizing: border-box;">
@@ -149,8 +147,9 @@ async def handle_chat(payload: ChatPayload):
                         """
                         return JSONResponse(content={"reply": html})
             except Exception as e: print(f"Hotel fallback error: {e}")
+        # --- КОНЕЦ БЛОКА ПОИСКА ОТЕЛЯ ---
 
-        # --- ОБЫЧНЫЙ ПОИСК ГОРОДА ---
+        # ЕСЛИ ЭТО ОБЫЧНЫЙ ПОИСК ГОРОДА:
         if not city_en: return JSONResponse(content={"reply": t['err_city']})
         city_en = city_en.lower()
         
@@ -227,11 +226,9 @@ async def handle_chat(payload: ChatPayload):
         
         for h in to_show:
             if not isinstance(h, dict): continue
-            h_name = h.get('n', 'Hotel')
             
-            # ПОЛНОЦЕННАЯ ССЫЛКА С ДАТАМИ И ЛЮДЬМИ ДЛЯ СПИСКА ОТЕЛЕЙ
-            b_url = f"https://www.booking.com/searchresults.html?ss={urllib.parse.quote(h_name + ' ' + city_en)}&checkin={link_checkin}&checkout={link_checkout}&group_adults=2&no_rooms=1"
-            link = f"https://www.stay22.com/allez/{STAY22_AID}?url={urllib.parse.quote(b_url)}"
+            # ТА САМАЯ РАБОЧАЯ ССЫЛКА ИЗ ТВОЕГО КОДА
+            link = f"https://www.stay22.com/allez/booking/{h.get('id', '')}?aid={STAY22_AID}"
             
             html += f"""
             <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 15px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 15px; box-sizing: border-box;">
@@ -240,7 +237,7 @@ async def handle_chat(payload: ChatPayload):
                         <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', t['hotel'])}</span>
                         <span style="color: #008009; font-size: 12px; font-weight: 700;">{t['verified']}</span>
                     </div>
-                    <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h_name}</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h.get('n', 'Hotel')}</div>
                     <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h.get('d', '')}</div>
                 </div>
                 <div style="text-align: right; min-width: 150px; box-sizing: border-box;">
