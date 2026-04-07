@@ -73,12 +73,14 @@ async def handle_chat(payload: ChatPayload):
     t = UI_LANGS.get(user_lang, UI_LANGS['en'])
 
     try:
+        # ЗАЩИТА ОТ ФАНТАЗИЙ: Добавлено жесткое правило №2
         analyzer_prompt = f"""
         Analyze the user's travel query: '{msg}'. Respond ONLY with valid JSON.
-        CRITICAL RULE: If the user wrote a COUNTRY (e.g., 'Italy', 'Spain', 'Италия'), you MUST find its CAPITAL CITY (e.g., 'Rome', 'Madrid') and put it in the "city" field. Never return a country name.
+        CRITICAL RULE 1: If the user wrote a COUNTRY, you MUST find its CAPITAL CITY and put it in the "city" field.
+        CRITICAL RULE 2: If the user provides a full hotel name (e.g. 'NapCastle Caledonian Park'), put the ENTIRE string into 'hotel'. Do NOT split it. Do NOT guess a city (like 'Naples') from parts of the hotel name. If no city is explicitly written, set "city" to null.
         {{
-          "city": "Specific city name in English (or capital if it is a country. If none, null)",
-          "hotel": "Specific hotel/apartment name if requested (e.g. 'Rixos', 'Hilton', 'NapCastle'), else null",
+          "city": "Specific city name in English (or capital if it is a country. If none explicitly mentioned, null)",
+          "hotel": "Specific hotel/apartment name if requested (e.g. 'Rixos', 'Hilton', 'NapCastle Caledonian Park'), else null",
           "filter": "Translate specific request to English (e.g. 'pool', 'cheap', 'center'). If no specific request, null",
           "wants_more": true if user asks for 'more', 'next', 'еще', 'другие', else false
         }}
@@ -98,7 +100,7 @@ async def handle_chat(payload: ChatPayload):
 
         target_hotel = None
 
-        # --- ЗАПАСНОЙ ПАРАШЮТ: ПОИСК И КЭШИРОВАНИЕ КОНКРЕТНОГО ОТЕЛЯ ---
+        # --- СНАЙПЕР ---
         if hotel_name:
             query_str = f"{hotel_name} {city_en}" if city_en else hotel_name
             safe_query = query_str.replace(' ', '_').lower()
@@ -143,7 +145,6 @@ async def handle_chat(payload: ChatPayload):
                 results = l_res.json().get('data', [])
                 
                 for r in results:
-                    # РАСШИРЕННЫЙ ФИЛЬТР: Берем всё, что НЕ является просто городом или аэропортом
                     if r.get('dest_type') not in ['city', 'region', 'country', 'airport', 'district', 'landmark']:
                         target_hotel = r
                         break
@@ -186,9 +187,8 @@ async def handle_chat(payload: ChatPayload):
                         """
                         return JSONResponse(content={"reply": html})
             except Exception as e: print(f"Hotel fallback error: {e}")
-        # --- КОНЕЦ СНАЙПЕРА ---
 
-        # ЕСЛИ ЭТО ОБЫЧНЫЙ ПОИСК ГОРОДА (или если Снайпер промахнулся):
+        # --- ОБЫЧНЫЙ ПОИСК ГОРОДА ---
         if not city_en: return JSONResponse(content={"reply": t['err_city']})
         city_en = city_en.lower()
         
@@ -262,7 +262,6 @@ async def handle_chat(payload: ChatPayload):
             <div style="max-width: 1000px; margin: 0 auto; box-sizing: border-box;">
         """
 
-        # НОВАЯ МАГИЯ: Предупреждение, если Снайпер промахнулся
         if hotel_name and not target_hotel:
             alt_msg = t['not_found_alt'].format(hotel=hotel_name.title())
             html += f"<div style='background: #fff3cd; color: #856404; border: 1px solid #ffeeba; border-radius: 8px; padding: 12px; margin-bottom: 15px; font-size: 14px;'>{alt_msg}</div>"
