@@ -73,7 +73,7 @@ async def handle_chat(payload: ChatPayload):
     t = UI_LANGS.get(user_lang, UI_LANGS['en'])
 
     try:
-        # ШАГ 1: АНАЛИЗАТОР ИЩЕТ И ГОРОДА, И КОНКРЕТНЫЕ ОТЕЛИ
+        # АНАЛИЗАТОР
         analyzer_prompt = f"""
         Analyze the user's travel query: '{msg}'. Respond ONLY with valid JSON.
         {{
@@ -96,9 +96,48 @@ async def handle_chat(payload: ChatPayload):
         user_filter = intent_data.get('filter')
         wants_more = intent_data.get('wants_more', False)
 
-        # --- ЗАПАСНОЙ ПАРАШЮТ (СНАЙПЕР ДЛЯ ОТЕЛЕЙ) ---
+        # --- ЗАПАСНОЙ ПАРАШЮТ: ПОИСК И КЭШИРОВАНИЕ КОНКРЕТНОГО ОТЕЛЯ ---
         if hotel_name:
             query_str = f"{hotel_name} {city_en}" if city_en else hotel_name
+            # Создаем уникальный ключ для отеля, чтобы искать его в базе
+            safe_query = query_str.replace(' ', '_').lower()
+            hotel_db_key = f"v16:hotel:{safe_query}:{user_lang}"
+            
+            # 1. ПРОВЕРЯЕМ БАЗУ (Вдруг мы уже искали этот отель?)
+            if redis_db:
+                cached_hotel_raw = redis_db.get(hotel_db_key)
+                if cached_hotel_raw:
+                    try:
+                        c_hotel = json.loads(cached_hotel_raw)
+                        h_id = c_hotel.get('id')
+                        h_name = c_hotel.get('name')
+                        h_desc = c_hotel.get('desc')
+                        link = f"https://www.stay22.com/allez/booking/{h_id}?aid={STAY22_AID}"
+                        
+                        html = f"""
+                        <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: transparent; padding: 10px 0; box-sizing: border-box;">
+                            <div style="max-width: 1000px; margin: 0 auto; box-sizing: border-box;">
+                                <h2 style="font-size: 20px; font-weight: 700; color: #003580; margin-bottom: 15px; box-sizing: border-box;">{t['found_hotel']}</h2>
+                                <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 15px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 15px; box-sizing: border-box;">
+                                    <div style="flex: 1; min-width: 280px; box-sizing: border-box;">
+                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                                            <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{t['hotel']}</span>
+                                            <span style="color: #008009; font-size: 12px; font-weight: 700;">{t['verified']}</span>
+                                        </div>
+                                        <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h_name}</div>
+                                        <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h_desc}</div>
+                                    </div>
+                                    <div style="text-align: right; min-width: 150px; box-sizing: border-box;">
+                                        <a href="{link}" target="_blank" style="background: #006ce4; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 4px; font-size: 14px; font-weight: 600; display: inline-block; text-align: center; width: 100%; box-sizing: border-box;">{t['show_prices']}</a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        """
+                        return JSONResponse(content={"reply": html})
+                    except: pass # Если кэш сломался, просто идем качать заново
+
+            # 2. ЕСЛИ В БАЗЕ НЕТ - ИДЕМ НА BOOKING
             try:
                 headers_rap = {"X-RapidAPI-Key": RAPID_API_KEY, "X-RapidAPI-Host": "booking-com18.p.rapidapi.com"}
                 l_res = requests.get("https://booking-com18.p.rapidapi.com/stays/auto-complete", headers=headers_rap, params={"query": query_str}, timeout=10)
@@ -111,7 +150,6 @@ async def handle_chat(payload: ChatPayload):
                         break
                         
                 if target_hotel:
-                    # БЕРЕМ ПРАВИЛЬНОЕ ПОЛЕ ИЗ ТВОЕГО СКРИНШОТА: dest_id
                     h_id = str(target_hotel.get('dest_id', ''))
                     if h_id:
                         h_name = target_hotel.get('name', hotel_name.title())
@@ -122,7 +160,10 @@ async def handle_chat(payload: ChatPayload):
                             h_desc = json.loads(g_res.json()['choices'][0]['message']['content']).get('d', '')
                         except: h_desc = h_name
                             
-                        # ФОРМИРУЕМ НАДЕЖНУЮ ССЫЛКУ КАК В БАЗОВОМ ПОИСКЕ
+                        # 3. СОХРАНЯЕМ В БАЗУ НА БУДУЩЕЕ
+                        if redis_db:
+                            redis_db.set(hotel_db_key, json.dumps({"id": h_id, "name": h_name, "desc": h_desc}))
+
                         link = f"https://www.stay22.com/allez/booking/{h_id}?aid={STAY22_AID}"
                         
                         html = f"""
@@ -149,7 +190,7 @@ async def handle_chat(payload: ChatPayload):
             except Exception as e: print(f"Hotel fallback error: {e}")
         # --- КОНЕЦ СНАЙПЕРА ---
 
-        # ШАГ 2: ОБЫЧНЫЙ ПОИСК ГОРОДА
+        # ЕСЛИ ЭТО ОБЫЧНЫЙ ПОИСК ГОРОДА:
         if not city_en: return JSONResponse(content={"reply": t['err_city']})
         city_en = city_en.lower()
         
@@ -197,7 +238,7 @@ async def handle_chat(payload: ChatPayload):
 
         if not full_list: return JSONResponse(content={"reply": t['not_found']})
 
-        # ШАГ 3: ФИЛЬТРЫ И КНОПКА "ЕЩЕ"
+        # ФИЛЬТРЫ И КНОПКА "ЕЩЕ"
         to_show = []
         is_filtered = False
 
@@ -218,7 +259,7 @@ async def handle_chat(payload: ChatPayload):
 
         hidden_count = len(full_list) - len(to_show)
 
-        # ШАГ 4: ГЕНЕРАЦИЯ HTML
+        # ГЕНЕРАЦИЯ HTML
         subtitle = f"<span style='color: #008009; font-size: 14px;'>✨ {t['filter_msg']}</span>" if is_filtered else f"{len(full_list)} {t['found']}"
         html = f"""
         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: transparent; padding: 10px 0; box-sizing: border-box;">
