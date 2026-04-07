@@ -73,7 +73,6 @@ async def handle_chat(payload: ChatPayload):
     t = UI_LANGS.get(user_lang, UI_LANGS['en'])
 
     try:
-        # ШАГ 1: АНАЛИЗАТОР ТЕПЕРЬ ИЩЕТ И ГОРОДА, И КОНКРЕТНЫЕ ОТЕЛИ
         analyzer_prompt = f"""
         Analyze the user's travel query: '{msg}'. Respond ONLY with valid JSON.
         {{
@@ -94,7 +93,7 @@ async def handle_chat(payload: ChatPayload):
         user_filter = intent_data.get('filter')
         wants_more = intent_data.get('wants_more', False)
 
-        # --- ЗАПАСНОЙ ПАРАШЮТ: ПОИСК КОНКРЕТНОГО ОТЕЛЯ ---
+        # --- ПОИСК КОНКРЕТНОГО ОТЕЛЯ ---
         if hotel_name:
             query_str = f"{hotel_name} {city_en}" if city_en else hotel_name
             try:
@@ -104,7 +103,7 @@ async def handle_chat(payload: ChatPayload):
                 
                 target_hotel = None
                 for r in results:
-                    if r.get('dest_type') == 'hotel': # Ищем именно тип "Отель"
+                    if r.get('dest_type') == 'hotel':
                         target_hotel = r
                         break
                 if not target_hotel and results: target_hotel = results[0]
@@ -113,7 +112,6 @@ async def handle_chat(payload: ChatPayload):
                     h_id = str(target_hotel.get('id') or target_hotel.get('hotel_id', ''))
                     if h_id:
                         h_name = target_hotel.get('name', hotel_name.title())
-                        # ИИ мгновенно пишет описание для найденного отеля
                         g_prompt = f"Write 1 short sentence describing the hotel '{h_name}' in language ISO '{user_lang.upper()}'. JSON: {{\"d\": \"text\"}}"
                         try:
                             g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
@@ -121,7 +119,9 @@ async def handle_chat(payload: ChatPayload):
                             h_desc = json.loads(g_res.json()['choices'][0]['message']['content']).get('d', '')
                         except: h_desc = h_name
                             
-                        link = f"https://www.stay22.com/allez/booking/{h_id}?aid={STAY22_AID}"
+                        # ИСПРАВЛЕНИЕ ССЫЛКИ ДЛЯ СНАЙПЕРА
+                        booking_url = f"https://www.booking.com/searchresults.html?ss={urllib.parse.quote(h_name + ' ' + (city_en or ''))}"
+                        link = f"https://www.stay22.com/allez/{STAY22_AID}?url={urllib.parse.quote(booking_url)}"
                         
                         html = f"""
                         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: transparent; padding: 10px 0; box-sizing: border-box;">
@@ -145,9 +145,8 @@ async def handle_chat(payload: ChatPayload):
                         """
                         return JSONResponse(content={"reply": html})
             except Exception as e: print(f"Hotel fallback error: {e}")
-        # --- КОНЕЦ БЛОКА ---
 
-        # ЕСЛИ ЭТО ОБЫЧНЫЙ ПОИСК ГОРОДА, ИДЕМ ПО СТАРОМУ ПУТИ:
+        # --- ОБЫЧНЫЙ ПОИСК ГОРОДА ---
         if not city_en: return JSONResponse(content={"reply": t['err_city']})
         city_en = city_en.lower()
         
@@ -224,7 +223,12 @@ async def handle_chat(payload: ChatPayload):
         
         for h in to_show:
             if not isinstance(h, dict): continue
-            link = f"https://www.stay22.com/allez/booking/{h.get('id', '')}?aid={STAY22_AID}"
+            h_name = h.get('n', 'Hotel')
+            
+            # ИСПРАВЛЕНИЕ ССЫЛКИ ДЛЯ КОНСЬЕРЖА
+            booking_url = f"https://www.booking.com/searchresults.html?ss={urllib.parse.quote(h_name + ' ' + city_en)}"
+            link = f"https://www.stay22.com/allez/{STAY22_AID}?url={urllib.parse.quote(booking_url)}"
+            
             html += f"""
             <div style="background: #ffffff; border: 1px solid #e7e7e7; border-radius: 8px; padding: 15px; margin-bottom: 12px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 15px; box-sizing: border-box;">
                 <div style="flex: 1; min-width: 280px; box-sizing: border-box;">
@@ -232,7 +236,7 @@ async def handle_chat(payload: ChatPayload):
                         <span style="background: #003580; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px;">{h.get('cat', t['hotel'])}</span>
                         <span style="color: #008009; font-size: 12px; font-weight: 700;">{t['verified']}</span>
                     </div>
-                    <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h.get('n', 'Hotel')}</div>
+                    <div style="font-size: 18px; font-weight: 700; color: #006ce4; margin-bottom: 8px;">{h_name}</div>
                     <div style="font-size: 13px; color: #4a4a4a; line-height: 1.5;">{h.get('d', '')}</div>
                 </div>
                 <div style="text-align: right; min-width: 150px; box-sizing: border-box;">
