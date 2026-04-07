@@ -64,22 +64,21 @@ async def handle_chat(payload: ChatPayload):
     headers = {"Authorization": f"Bearer {g_key}"}
 
     UI_LANGS = {
-        'ru': {'err_city': "Пожалуйста, укажите конкретный город.", 'not_found': "По вашему запросу отели не найдены.", 'found': "вариантов найдено", 'hotel': "ОТЕЛЬ", 'verified': "✓ Проверено", 'show_prices': "Показать цены", 'advice_title': "💡 Совет эксперта по", 'show_more': "Показать ещё", 'hotels_more': "вариантов из нашей базы ⬇️", 'show_all': "🗺️ Посмотреть все варианты на карте", 'more_cmd': "Еще", 'filter_msg': "Отфильтровано по вашему запросу!", 'found_hotel': "🎯 Вот отель, который вы искали:"},
-        'en': {'err_city': "Please specify a specific city.", 'not_found': "No hotels found matching your request.", 'found': "options found", 'hotel': "HOTEL", 'verified': "✓ Verified", 'show_prices': "Show prices", 'advice_title': "💡 Expert advice for", 'show_more': "Show", 'hotels_more': "more from our database ⬇️", 'show_all': "🗺️ Find all options on map", 'more_cmd': "More", 'filter_msg': "Filtered matching your request!", 'found_hotel': "🎯 Here is the hotel you were looking for:"},
-        'es': {'err_city': "Por favor, especifica una ciudad.", 'not_found': "No se encontraron hoteles.", 'found': "opciones encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver precios", 'advice_title': "💡 Consejo para", 'show_more': "Mostrar", 'hotels_more': "más de nuestra base ⬇️", 'show_all': "🗺️ Ver todas las opciones en el mapa", 'more_cmd': "Más", 'filter_msg': "¡Filtrado según su solicitud!", 'found_hotel': "🎯 Aquí está el hotel que buscaba:"},
-        'de': {'err_city': "Bitte geben Sie eine Stadt an.", 'not_found': "Keine Hotels gefunden.", 'found': "Optionen gefunden", 'hotel': "HOTEL", 'verified': "✓ Überprüft", 'show_prices': "Preise anzeigen", 'advice_title': "💡 Tipp für", 'show_more': "Zeige", 'hotels_more': "weitere aus unserer Datenbank ⬇️", 'show_all': "🗺️ Alle Optionen auf der Karte finden", 'more_cmd': "Mehr", 'filter_msg': "Gefiltert nach Ihrer Anfrage!", 'found_hotel': "🎯 Hier ist das gesuchte Hotel:"},
-        'fr': {'err_city': "Veuillez préciser une ville.", 'not_found': "Aucun hôtel trouvé.", 'found': "options trouvées", 'hotel': "HÔTEL", 'verified': "✓ Vérifié", 'show_prices': "Voir les prix", 'advice_title': "💡 Conseil pour", 'show_more': "Afficher", 'hotels_more': "plus de notre base ⬇️", 'show_all': "🗺️ Trouver toutes les options sur la carte", 'more_cmd': "Plus", 'filter_msg': "Filtré selon votre demande !", 'found_hotel': "🎯 Voici l'hôtel que vous cherchiez :"}
+        'ru': {'err_city': "Пожалуйста, укажите конкретный город.", 'not_found': "По вашему запросу отели не найдены.", 'found': "вариантов найдено", 'hotel': "ОТЕЛЬ", 'verified': "✓ Проверено", 'show_prices': "Показать цены", 'advice_title': "💡 Совет эксперта по", 'show_more': "Показать ещё", 'hotels_more': "вариантов из нашей базы ⬇️", 'show_all': "🗺️ Посмотреть все варианты на карте", 'more_cmd': "Еще", 'filter_msg': "Отфильтровано по вашему запросу!", 'found_hotel': "🎯 Вот отель, который вы искали:", 'not_found_alt': "Не удалось найти точный отель <b>{hotel}</b>. Вот отличные альтернативы рядом:"},
+        'en': {'err_city': "Please specify a specific city.", 'not_found': "No hotels found matching your request.", 'found': "options found", 'hotel': "HOTEL", 'verified': "✓ Verified", 'show_prices': "Show prices", 'advice_title': "💡 Expert advice for", 'show_more': "Show", 'hotels_more': "more from our database ⬇️", 'show_all': "🗺️ Find all options on map", 'more_cmd': "More", 'filter_msg': "Filtered matching your request!", 'found_hotel': "🎯 Here is the accommodation you were looking for:", 'not_found_alt': "Couldn't find the exact accommodation <b>{hotel}</b>. Here are great alternatives nearby:"},
+        'es': {'err_city': "Por favor, especifica una ciudad.", 'not_found': "No se encontraron hoteles.", 'found': "opciones encontradas", 'hotel': "HOTEL", 'verified': "✓ Verificado", 'show_prices': "Ver precios", 'advice_title': "💡 Consejo para", 'show_more': "Mostrar", 'hotels_more': "más de nuestra base ⬇️", 'show_all': "🗺️ Ver todas las opciones en el mapa", 'more_cmd': "Más", 'filter_msg': "¡Filtrado según su solicitud!", 'found_hotel': "🎯 Aquí está el alojamiento que buscaba:", 'not_found_alt': "No pudimos encontrar el alojamiento exacto <b>{hotel}</b>. Aquí hay alternativas cercanas:"},
+        'de': {'err_city': "Bitte geben Sie eine Stadt an.", 'not_found': "Keine Hotels gefunden.", 'found': "Optionen gefunden", 'hotel': "HOTEL", 'verified': "✓ Überprüft", 'show_prices': "Preise anzeigen", 'advice_title': "💡 Tipp für", 'show_more': "Zeige", 'hotels_more': "weitere aus unserer Datenbank ⬇️", 'show_all': "🗺️ Alle Optionen auf der Karte finden", 'more_cmd': "Mehr", 'filter_msg': "Gefiltert nach Ihrer Anfrage!", 'found_hotel': "🎯 Hier ist die gesuchte Unterkunft:", 'not_found_alt': "Die genaue Unterkunft <b>{hotel}</b> wurde nicht gefunden. Hier sind Alternativen in der Nähe:"},
+        'fr': {'err_city': "Veuillez préciser une ville.", 'not_found': "Aucun hôtel trouvé.", 'found': "options trouvées", 'hotel': "HÔTEL", 'verified': "✓ Vérifié", 'show_prices': "Voir les prix", 'advice_title': "💡 Conseil pour", 'show_more': "Afficher", 'hotels_more': "plus de notre base ⬇️", 'show_all': "🗺️ Trouver toutes les options sur la carte", 'more_cmd': "Plus", 'filter_msg': "Filtré selon votre demande !", 'found_hotel': "🎯 Voici l'hébergement que vous cherchiez :", 'not_found_alt': "Impossible de trouver l'hébergement exact <b>{hotel}</b>. Voici d'excellentes alternatives à proximité :"}
     }
     t = UI_LANGS.get(user_lang, UI_LANGS['en'])
 
     try:
-        # АНАЛИЗАТОР С ЖЕСТКИМ ПРАВИЛОМ ДЛЯ СТОЛИЦ
         analyzer_prompt = f"""
         Analyze the user's travel query: '{msg}'. Respond ONLY with valid JSON.
         CRITICAL RULE: If the user wrote a COUNTRY (e.g., 'Italy', 'Spain', 'Италия'), you MUST find its CAPITAL CITY (e.g., 'Rome', 'Madrid') and put it in the "city" field. Never return a country name.
         {{
           "city": "Specific city name in English (or capital if it is a country. If none, null)",
-          "hotel": "Specific hotel name if requested (e.g. 'Rixos', 'Hilton'), else null",
+          "hotel": "Specific hotel/apartment name if requested (e.g. 'Rixos', 'Hilton', 'NapCastle'), else null",
           "filter": "Translate specific request to English (e.g. 'pool', 'cheap', 'center'). If no specific request, null",
           "wants_more": true if user asks for 'more', 'next', 'еще', 'другие', else false
         }}
@@ -96,6 +95,8 @@ async def handle_chat(payload: ChatPayload):
         hotel_name = intent_data.get('hotel')
         user_filter = intent_data.get('filter')
         wants_more = intent_data.get('wants_more', False)
+
+        target_hotel = None
 
         # --- ЗАПАСНОЙ ПАРАШЮТ: ПОИСК И КЭШИРОВАНИЕ КОНКРЕТНОГО ОТЕЛЯ ---
         if hotel_name:
@@ -141,9 +142,9 @@ async def handle_chat(payload: ChatPayload):
                 l_res = requests.get("https://booking-com18.p.rapidapi.com/stays/auto-complete", headers=headers_rap, params={"query": query_str}, timeout=10)
                 results = l_res.json().get('data', [])
                 
-                target_hotel = None
                 for r in results:
-                    if r.get('dest_type') == 'hotel':
+                    # РАСШИРЕННЫЙ ФИЛЬТР: Берем всё, что НЕ является просто городом или аэропортом
+                    if r.get('dest_type') not in ['city', 'region', 'country', 'airport', 'district', 'landmark']:
                         target_hotel = r
                         break
                         
@@ -151,7 +152,7 @@ async def handle_chat(payload: ChatPayload):
                     h_id = str(target_hotel.get('dest_id', ''))
                     if h_id:
                         h_name = target_hotel.get('name', hotel_name.title())
-                        g_prompt = f"Write 1 short sentence describing the hotel '{h_name}' in language ISO '{user_lang.upper()}'. JSON: {{\"d\": \"text\"}}"
+                        g_prompt = f"Write 1 short sentence describing the accommodation '{h_name}' in language ISO '{user_lang.upper()}'. JSON: {{\"d\": \"text\"}}"
                         try:
                             g_res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, 
                                 json={"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": g_prompt}], "response_format": {"type": "json_object"}}, timeout=5)
@@ -187,7 +188,7 @@ async def handle_chat(payload: ChatPayload):
             except Exception as e: print(f"Hotel fallback error: {e}")
         # --- КОНЕЦ СНАЙПЕРА ---
 
-        # ЕСЛИ ЭТО ОБЫЧНЫЙ ПОИСК ГОРОДА:
+        # ЕСЛИ ЭТО ОБЫЧНЫЙ ПОИСК ГОРОДА (или если Снайпер промахнулся):
         if not city_en: return JSONResponse(content={"reply": t['err_city']})
         city_en = city_en.lower()
         
@@ -235,7 +236,6 @@ async def handle_chat(payload: ChatPayload):
 
         if not full_list: return JSONResponse(content={"reply": t['not_found']})
 
-        # ФИЛЬТРЫ И КНОПКА "ЕЩЕ"
         to_show = []
         is_filtered = False
 
@@ -256,13 +256,18 @@ async def handle_chat(payload: ChatPayload):
 
         hidden_count = len(full_list) - len(to_show)
 
-        # ГЕНЕРАЦИЯ HTML
         subtitle = f"<span style='color: #008009; font-size: 14px;'>✨ {t['filter_msg']}</span>" if is_filtered else f"{len(full_list)} {t['found']}"
         html = f"""
         <div style="font-family: 'BlinkMacSystemFont', sans-serif; width: 100%; color: #1a1a1a; background: transparent; padding: 10px 0; box-sizing: border-box;">
             <div style="max-width: 1000px; margin: 0 auto; box-sizing: border-box;">
-                <h2 style="font-size: 20px; font-weight: 700; color: #003580; margin-bottom: 15px; box-sizing: border-box;">{city_en.capitalize()}: {subtitle}</h2>
         """
+
+        # НОВАЯ МАГИЯ: Предупреждение, если Снайпер промахнулся
+        if hotel_name and not target_hotel:
+            alt_msg = t['not_found_alt'].format(hotel=hotel_name.title())
+            html += f"<div style='background: #fff3cd; color: #856404; border: 1px solid #ffeeba; border-radius: 8px; padding: 12px; margin-bottom: 15px; font-size: 14px;'>{alt_msg}</div>"
+
+        html += f"<h2 style='font-size: 20px; font-weight: 700; color: #003580; margin-bottom: 15px; box-sizing: border-box;'>{city_en.capitalize()}: {subtitle}</h2>"
         
         for h in to_show:
             if not isinstance(h, dict): continue
